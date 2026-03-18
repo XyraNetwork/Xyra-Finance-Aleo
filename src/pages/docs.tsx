@@ -1,6 +1,7 @@
 import type { NextPageWithLayout } from '@/types';
 import Layout from '@/layouts/_layout';
 import Link from 'next/link';
+import { LENDING_POOL_PROGRAM_ID } from '@/components/aleo/rpc';
 
 const DocsPage: NextPageWithLayout = () => {
   return (
@@ -116,10 +117,10 @@ const DocsPage: NextPageWithLayout = () => {
           <ul className="list-disc list-inside space-y-1">
             <li>
               <span className="font-semibold">Aleo pool program</span>{' '}
-              (<span className="font-mono">lending_pool_v86.aleo</span>): handles ALEO deposits, withdraws,
-              borrows, and repays. Program id is configured in{' '}
-              <span className="font-mono">src/types/index.ts</span> as{' '}
-              <span className="font-mono">BOUNTY_PROGRAM_ID</span>, and the Leo source lives in{' '}
+              (<span className="font-mono">{LENDING_POOL_PROGRAM_ID}</span>): handles ALEO deposits, withdraws,
+              borrows, and repays. Program id is configured via{' '}
+              <span className="font-mono">NEXT_PUBLIC_LENDING_POOL_PROGRAM_ID</span> (see{' '}
+              <span className="font-mono">.env</span> / <span className="font-mono">src/types/index.ts</span>), and the Leo source lives in{' '}
               <span className="font-mono">program/src/main.leo</span>.
             </li>
             <li>

@@ -37,10 +37,12 @@ export type BountyData = {
   proposals?: ProposalData[];
 };
 
-// Aleo program ID for the first lending pool (lending_pool_v86: micro-ALEO amounts, real interest/APY, current_block in transitions).
-export const BOUNTY_PROGRAM_ID = 'lending_pool_v86.aleo';
+// Aleo program ID for the first lending pool.
+// Read from NEXT_PUBLIC_LENDING_POOL_PROGRAM_ID so we can switch pools via env.
+export const BOUNTY_PROGRAM_ID =
+  process.env.NEXT_PUBLIC_LENDING_POOL_PROGRAM_ID ;
 
-// USDC pool program: lending_pool_usdce_v86.aleo — v86-style interest/APY, current_block, scaled balances.
+// USDC pool program: lending_pool_usdce_v86.aleo — v86-style interest/APY, on-chain block.height, scaled balances.
 export const USDC_POOL_PROGRAM_ID = 'lending_pool_usdce_v86.aleo';
 
 // USDCx token program (Provable testnet): required for Token records used in USDC pool deposit/repay/withdraw/borrow.

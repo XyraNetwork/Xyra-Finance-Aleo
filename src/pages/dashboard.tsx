@@ -28,7 +28,6 @@ import {
   getPrivateUsdcBalance,
   lendingAccrueInterest,
   lendingAccrueInterestUsdc,
-  getLatestBlockHeight,
   debugAllRecords,
   LENDING_POOL_PROGRAM_ID,
   USDC_LENDING_POOL_PROGRAM_ID,
@@ -900,8 +899,10 @@ const DashboardPage: NextPageWithLayout = () => {
         return;
       }
 
-      if (action === 'borrow' && poolStateLoaded && amount > availableLiquidity) {
-        const msg = `Borrow amount exceeds available pool liquidity (${availableLiquidity.toFixed(2)} ALEO). Please reduce the amount.`;
+      if (action === 'borrow' && poolStateLoaded && amount > availableBorrowAleo) {
+        const msg = `Borrow amount exceeds your available borrow (${availableBorrowAleo.toFixed(
+          4,
+        )} ALEO). This is capped by 75% LTV and pool liquidity.`;
         setAmountError(msg);
         setStatusMessage(msg);
         setLoading(false);
@@ -1501,9 +1502,8 @@ const DashboardPage: NextPageWithLayout = () => {
       setLoading(true);
       setStatusMessage('Accruing interest...');
 
-      const currentBlock = await getLatestBlockHeight();
-      const tx = await lendingAccrueInterest(executeTransaction, currentBlock);
-      
+      const tx = await lendingAccrueInterest(executeTransaction);
+
       setTxId(null);
       setTxFinalized(false);
       setStatusMessage('Interest accrual submitted. Waiting for finalization…');
@@ -1605,8 +1605,7 @@ const DashboardPage: NextPageWithLayout = () => {
       setLoading(true);
       setStatusMessage('Accruing USDC interest...');
 
-      const currentBlock = await getLatestBlockHeight();
-      const tx = await lendingAccrueInterestUsdc(executeTransaction, currentBlock);
+      const tx = await lendingAccrueInterestUsdc(executeTransaction);
 
       setTxId(null);
       setTxFinalized(false);
@@ -1718,6 +1717,14 @@ const DashboardPage: NextPageWithLayout = () => {
     ((Number(totalSuppliedUsdc) || 0) - (Number(totalBorrowedUsdc) || 0)) / 1_000_000,
   );
 
+  // Borrow availability is constrained by BOTH:
+  // - Pool liquidity (availableAleo/availableUsdc)
+  // - User LTV: max_debt = 75% of collateral (minus existing debt)
+  const maxBorrowAleoByLtv = Math.max(0, supplyBalanceAleo * 0.75 - borrowDebtAleo);
+  const maxBorrowUsdcByLtv = Math.max(0, supplyBalanceUsdc * 0.75 - borrowDebtUsdc);
+  const availableBorrowAleo = Math.max(0, Math.min(availableAleo, maxBorrowAleoByLtv));
+  const availableBorrowUsdc = Math.max(0, Math.min(availableUsdc, maxBorrowUsdcByLtv));
+
   const modalAmount = (() => {
     const n = Number(modalAmountInput);
     return Number.isNaN(n) ? 0 : n;
@@ -1824,7 +1831,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         : actionModalMode === 'deposit'
                           ? privateBalanceModal.toFixed(7)
                           : actionModalMode === 'borrow'
-                            ? (actionModalAsset === 'aleo' ? availableAleo : availableUsdc).toFixed(7)
+                            ? (actionModalAsset === 'aleo' ? availableBorrowAleo : availableBorrowUsdc).toFixed(7)
                             : debtBalanceModal.toFixed(7)}
                         {' '}
                         <button
@@ -1837,7 +1844,7 @@ const DashboardPage: NextPageWithLayout = () => {
                                 : actionModalMode === 'deposit'
                                   ? privateBalanceModal
                                   : actionModalMode === 'borrow'
-                                    ? (actionModalAsset === 'aleo' ? availableAleo : availableUsdc)
+                                    ? (actionModalAsset === 'aleo' ? availableBorrowAleo : availableBorrowUsdc)
                                     : debtBalanceModal;
                             setModalAmountInput(String(maxVal));
                             if (actionModalAsset === 'usdc') {
@@ -2135,7 +2142,7 @@ const DashboardPage: NextPageWithLayout = () => {
                           {isRefreshingState ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            availableAleo.toFixed(4)
+                            availableBorrowAleo.toFixed(4)
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2148,7 +2155,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         <td>
                           <PrivateActionButton
                             onClick={() => openActionModal('borrow', 'aleo')}
-                            disabled={loading || !connected || isRefreshingState || availableAleo <= 0}
+                            disabled={loading || !connected || isRefreshingState || availableBorrowAleo <= 0}
                           >
                             Borrow
                           </PrivateActionButton>
@@ -2160,7 +2167,7 @@ const DashboardPage: NextPageWithLayout = () => {
                           {isRefreshingUsdcState ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            availableUsdc.toFixed(4)
+                            availableBorrowUsdc.toFixed(4)
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2173,7 +2180,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         <td>
                           <PrivateActionButton
                             onClick={() => openActionModal('borrow', 'usdc')}
-                            disabled={loading || !connected || isRefreshingUsdcState || availableUsdc <= 0}
+                            disabled={loading || !connected || isRefreshingUsdcState || availableBorrowUsdc <= 0}
                           >
                             Borrow
                           </PrivateActionButton>

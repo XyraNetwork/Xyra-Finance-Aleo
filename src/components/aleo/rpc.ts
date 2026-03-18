@@ -494,8 +494,7 @@ export async function getPrivateCreditsBalance(
  * Contract: lending_pool_v86.aleo
  *   async transition deposit_with_credits(
  *     pay_record: credits.aleo/credits,
- *     public amount: u64,
- *     public current_block: u64
+ *     public amount: u64
  *   ) -> (UserActivity, credits.aleo/credits, Future)
  */
 export async function lendingDeposit(
@@ -618,9 +617,7 @@ export async function lendingDeposit(
     }
 
     const amountInput = `${amountMicro}u64`;
-    const currentBlock = await getLatestBlockHeight();
-    const currentBlockInput = `${Math.max(0, currentBlock)}u64`;
-    const inputs: any[] = [recordInput, amountInput, currentBlockInput];
+    const inputs: any[] = [recordInput, amountInput];
 
     console.log('🔍 Calling executeTransaction for deposit_with_credits...', {
       program: LENDING_POOL_PROGRAM_ID,
@@ -628,7 +625,6 @@ export async function lendingDeposit(
       inputsPreview: {
         input0_len: recordInput.length,
         input1: amountInput,
-        input2: currentBlockInput,
       },
     });
 
@@ -691,9 +687,7 @@ export async function lendingBorrow(
 
   try {
     const amountMicro = Math.round(amount * 1_000_000);
-    const currentBlock = await getLatestBlockHeight();
-    const currentBlockInput = `${Math.max(0, currentBlock)}u64`;
-    const inputs = [`${amountMicro}u64`, currentBlockInput];
+    const inputs = [`${amountMicro}u64`];
 
     // Check pool liquidity (same logic as before)
     try {
@@ -765,8 +759,7 @@ export async function lendingBorrow(
  * Contract: lending_pool_v86.aleo
  *   async transition repay_with_credits(
  *     pay_record: credits.aleo/credits,
- *     public amount: u64,
- *     public current_block: u64
+ *     public amount: u64
  *   ) -> (UserActivity, credits.aleo/credits, Future)
  *
  * This mirrors `lendingDeposit` but calls `repay_with_credits` instead of `deposit_with_credits`.
@@ -881,9 +874,7 @@ export async function lendingRepay(
     }
 
     const amountInput = `${amountMicro}u64`;
-    const currentBlock = await getLatestBlockHeight();
-    const currentBlockInput = `${Math.max(0, currentBlock)}u64`;
-    const inputs: any[] = [recordInput, amountInput, currentBlockInput];
+    const inputs: any[] = [recordInput, amountInput];
 
     console.log('🔍 Calling executeTransaction for repay_with_credits...', {
       program: LENDING_POOL_PROGRAM_ID,
@@ -891,7 +882,6 @@ export async function lendingRepay(
       inputsPreview: {
         input0_len: typeof recordInput === 'string' ? recordInput.length : 'object',
         input1: amountInput,
-        input2: currentBlockInput,
       },
     });
 
@@ -954,9 +944,7 @@ export async function lendingWithdraw(
 
   try {
     const amountMicro = Math.round(amount * 1_000_000);
-    const currentBlock = await getLatestBlockHeight();
-    const currentBlockInput = `${Math.max(0, currentBlock)}u64`;
-    const inputs = [`${amountMicro}u64`, currentBlockInput];
+    const inputs = [`${amountMicro}u64`];
 
     console.log('🔍 Calling executeTransaction for withdraw (public fee)...');
     const result = await executeTransaction({
@@ -997,10 +985,10 @@ export async function lendingWithdraw(
 }
 
 // --- USDC Pool (lending_pool_usdce_v86.aleo) ---
-// Contract: deposit(token, amount, current_block, proofs), repay(token, amount, current_block, proofs),
-//           withdraw(public amount, public current_block), borrow(public amount, public current_block).
-// - deposit/repay: 4 inputs — token, amount (micro-USDC), current_block (u64), proofs.
-// - withdraw/borrow: 2 inputs — amount (micro-USDC), current_block (u64). Backend sends USDCx from vault to user.
+// Contract: deposit(token, amount, proofs), repay(token, amount, proofs),
+//           withdraw(public amount), borrow(public amount).
+// - deposit/repay: 3 inputs — token, amount (micro-USDC), proofs. Block height is read on-chain.
+// - withdraw/borrow: 1 input — amount (micro-USDC). Backend sends USDCx from vault to user.
 // Amount in program is micro-USDC (1 USDC = 1_000_000). RPC accepts human USDC and converts to micro for transitions.
 const USDC_TOKEN_PROGRAM = USDC_TOKEN_PROGRAM_ID;
 
@@ -1335,7 +1323,7 @@ function handleUsdcTxError(error: any, action: string): string {
 }
 
 /**
- * USDC deposit: lending_pool_usdce_v86.aleo/deposit(token, amount, current_block, proofs) — 4 inputs.
+ * USDC deposit: lending_pool_usdce_v86.aleo/deposit(token, amount, proofs) — 3 inputs.
  * Amount in human USDC; converted to micro-USDC for the program.
  */
 export async function lendingDepositUsdc(
@@ -1354,8 +1342,6 @@ export async function lendingDepositUsdc(
     }
     const amountMicro = Math.round(amount * 1_000_000);
     const amountStr = `${amountMicro}u64`;
-    const currentBlock = await getLatestBlockHeight();
-    const currentBlockStr = `${Math.max(0, currentBlock)}u64`;
     let proofsEncoded: string;
     if (typeof proofs === 'string' && proofs.trim().startsWith('[') && proofs.includes('siblings')) {
       proofsEncoded = proofs.trim();
@@ -1369,13 +1355,12 @@ export async function lendingDepositUsdc(
           : DEFAULT_USDC_MERKLE_PROOFS;
     }
 
-    const inputs: (string | any)[] = [tokenInput, amountStr, currentBlockStr, proofsEncoded];
+    const inputs: (string | any)[] = [tokenInput, amountStr, proofsEncoded];
 
-    console.log('[USDC deposit] All 4 inputs:', {
+    console.log('[USDC deposit] All 3 inputs:', {
       input0_token: tokenInput,
       input1_amount: amountStr,
-      input2_current_block: currentBlockStr,
-      input3_proofs: proofsEncoded,
+      input2_proofs: proofsEncoded,
     });
 
     const result = await executeTransaction({
@@ -1394,7 +1379,7 @@ export async function lendingDepositUsdc(
 }
 
 /**
- * USDC repay: lending_pool_usdce_v86.aleo/repay(token, amount, current_block, proofs) — 4 inputs.
+ * USDC repay: lending_pool_usdce_v86.aleo/repay(token, amount, proofs) — 3 inputs.
  * Amount in human USDC; converted to micro-USDC for the program.
  */
 export async function lendingRepayUsdc(
@@ -1413,8 +1398,6 @@ export async function lendingRepayUsdc(
     }
     const amountMicro = Math.round(amount * 1_000_000);
     const amountStr = `${amountMicro}u64`;
-    const currentBlock = await getLatestBlockHeight();
-    const currentBlockStr = `${Math.max(0, currentBlock)}u64`;
     let proofsEncoded: string;
     if (typeof proofs === 'string' && proofs.trim().startsWith('[') && proofs.includes('siblings')) {
       proofsEncoded = proofs.trim();
@@ -1427,13 +1410,12 @@ export async function lendingRepayUsdc(
           ? (proofsInput[0].startsWith('{') ? `[${proofsInput[0]}, ${proofsInput[1]}]` : proofsInput.join(','))
           : DEFAULT_USDC_MERKLE_PROOFS;
     }
-    const inputs: (string | any)[] = [tokenInput, amountStr, currentBlockStr, proofsEncoded];
+    const inputs: (string | any)[] = [tokenInput, amountStr, proofsEncoded];
 
-    console.log('[USDC repay] All 4 inputs:', {
+    console.log('[USDC repay] All 3 inputs:', {
       input0_token: tokenInput,
       input1_amount: amountStr,
-      input2_current_block: currentBlockStr,
-      input3_proofs: proofsEncoded,
+      input2_proofs: proofsEncoded,
     });
 
     const result = await executeTransaction({
@@ -1459,8 +1441,7 @@ export async function lendingWithdrawUsdc(
   if (amount <= 0) throw new Error('Withdraw amount must be greater than 0');
   try {
     const amountMicro = Math.round(amount * 1_000_000);
-    const currentBlock = await getLatestBlockHeight();
-    const inputs = [`${amountMicro}u64`, `${Math.max(0, currentBlock)}u64`];
+    const inputs = [`${amountMicro}u64`];
     const result = await executeTransaction({
       program: USDC_LENDING_POOL_PROGRAM_ID,
       function: 'withdraw',
@@ -1484,8 +1465,7 @@ export async function lendingBorrowUsdc(
   if (amount <= 0) throw new Error('Borrow amount must be greater than 0');
   try {
     const amountMicro = Math.round(amount * 1_000_000);
-    const currentBlock = await getLatestBlockHeight();
-    const inputs = [`${amountMicro}u64`, `${Math.max(0, currentBlock)}u64`];
+    const inputs = [`${amountMicro}u64`];
     const result = await executeTransaction({
       program: USDC_LENDING_POOL_PROGRAM_ID,
       function: 'borrow',
@@ -1503,18 +1483,16 @@ export async function lendingBorrowUsdc(
 
 /**
  * Accrue interest on the Aleo pool (v86) using wallet adapter.
- * accrue_interest(public current_block: u64) — updates liquidity_index and borrow_index up to current_block.
+ * accrue_interest() — updates liquidity_index and borrow_index using on-chain block.height.
  * Anyone can call; indices are also updated automatically on every deposit, borrow, repay, withdraw.
  */
 export async function lendingAccrueInterest(
   executeTransaction: ((tx: any) => Promise<any>) | undefined,
-  currentBlock: number
 ): Promise<string> {
   console.log('========================================');
   console.log('📈 LENDING ACCRUE INTEREST FUNCTION CALLED (Aleo pool)');
   console.log('========================================');
   console.log('📥 Input Parameters:', {
-    currentBlock,
     network: CURRENT_NETWORK,
     programId: LENDING_POOL_PROGRAM_ID,
   });
@@ -1525,8 +1503,7 @@ export async function lendingAccrueInterest(
   const fee = DEFAULT_LENDING_FEE * 1_000_000;
 
   try {
-    const blockInput = `${Math.max(0, currentBlock)}u64`;
-    const inputs = [blockInput];
+    const inputs: string[] = [];
     console.log('💰 Transaction Configuration:', {
       inputs,
       fee: `${fee} microcredits`,
@@ -1585,16 +1562,14 @@ export async function lendingAccrueInterest(
  */
 export async function lendingAccrueInterestUsdc(
   executeTransaction: ((tx: any) => Promise<any>) | undefined,
-  currentBlock: number
 ): Promise<string> {
   if (!executeTransaction) throw new Error('executeTransaction is not available.');
   const fee = DEFAULT_LENDING_FEE * 1_000_000;
   try {
-    const blockInput = `${Math.max(0, currentBlock)}u64`;
     const result = await executeTransaction({
       program: USDC_LENDING_POOL_PROGRAM_ID,
       function: 'accrue_interest',
-      inputs: [blockInput],
+      inputs: [],
       fee,
       privateFee: false,
     });
@@ -1624,10 +1599,8 @@ export async function getLendingPoolStateForProgram(programId: string): Promise<
   liquidityIndex: string | null;
   borrowIndex: string | null;
 }> {
-  const key = '0u8';
-
   try {
-    const requestWithErrorHandling = async (mappingName: string) => {
+    const requestWithErrorHandling = async (mappingName: string, key: string) => {
       try {
         return await Promise.resolve(client.request('getMappingValue', {
           program_id: programId,
@@ -1635,19 +1608,13 @@ export async function getLendingPoolStateForProgram(programId: string): Promise<
           key,
         }));
       } catch (err: any) {
-        console.warn(`getLendingPoolStateForProgram(${programId}): Failed to fetch ${mappingName}:`, err?.message);
+        console.warn(
+          `getLendingPoolStateForProgram(${programId}): Failed to fetch ${mappingName} (key=${key}):`,
+          err?.message,
+        );
         return null;
       }
     };
-
-    const [supplied, borrowed, utilization, interest, liquidityIdx, borrowIdx] = await Promise.all([
-      requestWithErrorHandling('total_supplied'),
-      requestWithErrorHandling('total_borrowed'),
-      requestWithErrorHandling('utilization_index'),
-      requestWithErrorHandling('interest_index'),
-      requestWithErrorHandling('liquidity_index'),
-      requestWithErrorHandling('borrow_index'),
-    ]);
 
     const extract = (res: any): string | null => {
       if (res == null) return null;
@@ -1656,6 +1623,53 @@ export async function getLendingPoolStateForProgram(programId: string): Promise<
       const str = String(raw);
       return str.replace(/u64$/i, '');
     };
+
+    // -----------------------------
+    // v91+ (current main.leo) schema
+    // key type: field (single-asset key = 0field)
+    // mappings: total_deposited, total_borrowed, supply_index, borrow_index, ...
+    // -----------------------------
+    const keyField = '0field';
+    const [depositedV91, borrowedV91, supplyIdxV91, borrowIdxV91] = await Promise.all([
+      requestWithErrorHandling('total_deposited', keyField),
+      requestWithErrorHandling('total_borrowed', keyField),
+      requestWithErrorHandling('supply_index', keyField),
+      requestWithErrorHandling('borrow_index', keyField),
+    ]);
+
+    const depositedStr = extract(depositedV91);
+    const borrowedStr = extract(borrowedV91);
+    const supplyIdxStr = extract(supplyIdxV91);
+    const borrowIdxStr = extract(borrowIdxV91);
+
+    // If v91 mappings exist, use them.
+    if (depositedStr != null || borrowedStr != null || supplyIdxStr != null || borrowIdxStr != null) {
+      return {
+        totalSupplied: depositedStr,
+        totalBorrowed: borrowedStr,
+        // v91 program does not store utilization/interest indices separately.
+        utilizationIndex: null,
+        // Keep legacy fields populated for UI components that still display them.
+        interestIndex: supplyIdxStr,
+        liquidityIndex: supplyIdxStr,
+        borrowIndex: borrowIdxStr,
+      };
+    }
+
+    // -----------------------------
+    // v86 fallback schema (older pools)
+    // key type: u8 (GLOBAL_KEY = 0u8)
+    // mappings: total_supplied, utilization_index, liquidity_index, borrow_index, ...
+    // -----------------------------
+    const keyU8 = '0u8';
+    const [supplied, borrowed, utilization, interest, liquidityIdx, borrowIdx] = await Promise.all([
+      requestWithErrorHandling('total_supplied', keyU8),
+      requestWithErrorHandling('total_borrowed', keyU8),
+      requestWithErrorHandling('utilization_index', keyU8),
+      requestWithErrorHandling('interest_index', keyU8),
+      requestWithErrorHandling('liquidity_index', keyU8),
+      requestWithErrorHandling('borrow_index', keyU8),
+    ]);
 
     return {
       totalSupplied: extract(supplied),
@@ -1706,43 +1720,52 @@ export async function getUsdcLendingPoolState(): Promise<{
   return getLendingPoolStateForProgram(USDC_LENDING_POOL_PROGRAM_ID);
 }
 
-// --- v86 interest/APY constants (match program lending_pool_v86.aleo) ---
-const INDEX_SCALE_ALEO = 1_000_000_000_000; // 1e12
-const SCALE_ALEO = 1_000_000; // 1e6
-const BASE_RATE_PER_BLOCK_ALEO = 1000;
-const SLOPE_PER_UTIL_ALEO = 6667;
-const RESERVE_FACTOR_BPS_ALEO = 1000;
-/** Approximate blocks per year (e.g. 15s block time => 2_102_400). */
-export const BLOCKS_PER_YEAR_ALEO = 365 * 24 * 60 * 4; // 4 blocks/min => 2_102_400
+// --- v91 interest/APY constants (match program lending_pool_v91.aleo) ---
+// Leo program:
+//   const SCALE:        u64 = 10_000u64;   // basis points denominator
+//   const BASE_RATE:    u64 = 200u64;      // 2% base borrow rate (annual, bps)
+//   const SLOPE_RATE:   u64 = 400u64;      // +4% borrow per 100% utilization (annual, bps)
+//   const RESERVE_FACTOR: u64 = 1_000u64;  // 10% of interest to protocol
+//
+// On-chain, borrow APY (in bps) is:
+//   borrow_apy_bps = BASE_RATE + SLOPE_RATE * util
+// where util in [0,1]. Supply APY in bps is:
+//   supply_apy_bps = borrow_apy_bps * util * (1 - RESERVE_FACTOR / SCALE).
+//
+// We expose APY to the UI as fractions (e.g. 0.02 = 2%).
+const SCALE_ALEO = 10_000; // basis points denominator
+const BASE_RATE_BPS_ALEO = 200; // 2% base borrow APR
+const SLOPE_RATE_BPS_ALEO = 400; // +4% per 100% util
+const RESERVE_FACTOR_BPS_ALEO = 1_000; // 10% reserve cut
 
 /**
- * Compute supply and borrow APY from pool state (v85 rate model).
- * Program accrual: bi_new = bi + (bi * br * delta) / INDEX_SCALE, so rate per block = br/INDEX_SCALE (not br/SCALE).
- * br = BASE_RATE_PER_BLOCK + (SLOPE_PER_UTIL * util) / SCALE  [in SCALE units]
- * sr = (br * util * (10000 - RESERVE_FACTOR_BPS)) / (SCALE * 10000)  [in SCALE units]
- * APY = rate_per_block * blocks_per_year (simple-interest; matches program accrual scale).
+ * Compute supply and borrow APY (fractions) from pool state using the v91 model.
+ * Inputs:
+ *   - totalSupplied/totalBorrowed: principal balances (micro-credits); only the ratio matters.
+ * Returns:
+ *   - borrowAPY: annualized borrow rate as fraction (e.g. 0.02 = 2%).
+ *   - supplyAPY: annualized supply rate as fraction.
  */
 export function computeAleoPoolAPY(
   totalSupplied: number | string,
   totalBorrowed: number | string,
-  blocksPerYear: number = BLOCKS_PER_YEAR_ALEO
 ): { supplyAPY: number; borrowAPY: number } {
   const ts = Number(totalSupplied) || 0;
   const tb = Number(totalBorrowed) || 0;
   if (ts <= 0) {
     return { supplyAPY: 0, borrowAPY: 0 };
   }
-  const util = tb / ts; // 0..1
-  const utilScaled = Math.floor(util * SCALE_ALEO); // u64-style in JS
-  const br =
-    BASE_RATE_PER_BLOCK_ALEO + (SLOPE_PER_UTIL_ALEO * utilScaled) / SCALE_ALEO;
-  const sr =
-    (br * util * (10000 - RESERVE_FACTOR_BPS_ALEO)) / 10000;
-  // Program uses INDEX_SCALE in accrual: (index * rate * delta) / INDEX_SCALE => rate_per_block = rate/INDEX_SCALE
-  const borrowRatePerBlock = br / INDEX_SCALE_ALEO;
-  const supplyRatePerBlock = sr / INDEX_SCALE_ALEO;
-  const borrowAPY = borrowRatePerBlock * blocksPerYear;
-  const supplyAPY = supplyRatePerBlock * blocksPerYear;
+  const utilRaw = tb / ts; // 0..1
+  const util = Math.max(0, Math.min(1, utilRaw));
+
+  // Borrow APY in fraction: (BASE_RATE + SLOPE_RATE * util) / SCALE
+  const borrowAPY =
+    (BASE_RATE_BPS_ALEO + SLOPE_RATE_BPS_ALEO * util) / SCALE_ALEO;
+
+  // Supply APY = borrowAPY * util * (1 - reserve_factor)
+  const reserveCut = RESERVE_FACTOR_BPS_ALEO / SCALE_ALEO;
+  const supplyAPY = borrowAPY * util * (1 - reserveCut);
+
   return { supplyAPY, borrowAPY };
 }
 
@@ -1776,19 +1799,31 @@ export async function getAleoPoolUserEffectivePosition(
         return null;
       }
     };
-    const globalKey = '0u8';
-    const [scaledSupply, scaledBorrow, liquidityIndex, borrowIndex] = await Promise.all([
+
+    // v91: global key is 0field and supply index is `supply_index`.
+    // v86: global key is 0u8 and liquidity index is `liquidity_index`.
+    const [scaledSupply, scaledBorrow] = await Promise.all([
       requestWithErrorHandling('user_scaled_supply', userHash),
       requestWithErrorHandling('user_scaled_borrow', userHash),
-      requestWithErrorHandling('liquidity_index', globalKey),
-      requestWithErrorHandling('borrow_index', globalKey),
     ]);
-    const li = liquidityIndex ?? BigInt(INDEX_SCALE_ALEO);
-    const bi = borrowIndex ?? BigInt(INDEX_SCALE_ALEO);
+
+    const INDEX_SCALE_ALEO = 1_000_000_000_000n;
+
+    const keyField = '0field';
+    const keyU8 = '0u8';
+    const [supplyIndexV91, borrowIndexV91, liquidityIndexV86, borrowIndexV86] = await Promise.all([
+      requestWithErrorHandling('supply_index', keyField),
+      requestWithErrorHandling('borrow_index', keyField),
+      requestWithErrorHandling('liquidity_index', keyU8),
+      requestWithErrorHandling('borrow_index', keyU8),
+    ]);
+
+    const li = supplyIndexV91 ?? liquidityIndexV86 ?? INDEX_SCALE_ALEO;
+    const bi = borrowIndexV91 ?? borrowIndexV86 ?? INDEX_SCALE_ALEO;
     const ss = scaledSupply ?? BigInt(0);
     const sb = scaledBorrow ?? BigInt(0);
-    const effectiveSupplyBalance = Number((ss * li) / BigInt(INDEX_SCALE_ALEO));
-    const effectiveBorrowDebt = Number((sb * bi) / BigInt(INDEX_SCALE_ALEO));
+    const effectiveSupplyBalance = Number((ss * li) / INDEX_SCALE_ALEO);
+    const effectiveBorrowDebt = Number((sb * bi) / INDEX_SCALE_ALEO);
     return { effectiveSupplyBalance, effectiveBorrowDebt };
   } catch {
     return null;
