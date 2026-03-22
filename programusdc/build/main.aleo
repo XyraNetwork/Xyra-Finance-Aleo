@@ -2,7 +2,7 @@ import merkle_tree.aleo;
 import test_usdcx_multisig_core.aleo;
 import test_usdcx_freezelist.aleo;
 import test_usdcx_stablecoin.aleo;
-program lending_pool_usdcx_v16.aleo;
+program lending_pool_usdcx_v17.aleo;
 
 record UserActivity:
     owner as address.private;
@@ -78,7 +78,7 @@ function initialize:
     is.eq self.caller aleo1rhgdu77hgyqd3xjj8ucu3jj9r2krwz6mnzyd80gncr5fxcwlh5rsvzp9px into r0;
     assert.eq r0 true;
     async initialize into r1;
-    output r1 as lending_pool_usdcx_v16.aleo/initialize.future;
+    output r1 as lending_pool_usdcx_v17.aleo/initialize.future;
 
 finalize initialize:
     get.or_use initialized[0field] false into r0;
@@ -111,7 +111,7 @@ function deposit:
     output r10 as UserActivity.record;
     output r7 as test_usdcx_stablecoin.aleo/ComplianceRecord.record;
     output r8 as test_usdcx_stablecoin.aleo/Token.record;
-    output r11 as lending_pool_usdcx_v16.aleo/deposit.future;
+    output r11 as lending_pool_usdcx_v17.aleo/deposit.future;
 
 finalize deposit:
     input r0 as test_usdcx_stablecoin.aleo/transfer_private_to_public.future;
@@ -177,16 +177,19 @@ finalize deposit:
     set r55 into protocol_fees[0field];
     set r49 into supply_apy[0field];
     set r52 into borrow_apy[0field];
-    mul r1 1000000000000u64 into r56;
-    div r56 r35 into r57;
-    get.or_use user_scaled_supply[r2] 0u64 into r58;
-    add r58 r57 into r59;
-    set r59 into user_scaled_supply[r2];
-    add r7 r1 into r60;
-    set r60 into total_deposited[0field];
-    get.or_use available_liquidity[0field] 0u64 into r61;
-    add r61 r1 into r62;
-    set r62 into available_liquidity[0field];
+    cast r1 into r56 as u128;
+    mul r56 1000000000000u128 into r57;
+    cast r35 into r58 as u128;
+    div r57 r58 into r59;
+    cast r59 into r60 as u64;
+    get.or_use user_scaled_supply[r2] 0u64 into r61;
+    add r61 r60 into r62;
+    set r62 into user_scaled_supply[r2];
+    add r7 r1 into r63;
+    set r63 into total_deposited[0field];
+    get.or_use available_liquidity[0field] 0u64 into r64;
+    add r64 r1 into r65;
+    set r65 into available_liquidity[0field];
 
 function withdraw:
     input r0 as u64.public;
@@ -196,7 +199,7 @@ function withdraw:
     cast self.caller 1field 0u64 r0 0u64 0u64 into r3 as UserActivity.record;
     async withdraw r0 r2 into r4;
     output r3 as UserActivity.record;
-    output r4 as lending_pool_usdcx_v16.aleo/withdraw.future;
+    output r4 as lending_pool_usdcx_v17.aleo/withdraw.future;
 
 finalize withdraw:
     input r0 as u64.public;
@@ -261,35 +264,44 @@ finalize withdraw:
     set r48 into supply_apy[0field];
     set r51 into borrow_apy[0field];
     get.or_use user_scaled_supply[r1] 0u64 into r55;
-    mul r55 r34 into r56;
-    div r56 1000000000000u64 into r57;
-    lte r0 r57 into r58;
-    assert.eq r58 true;
-    get.or_use user_scaled_borrow[r1] 0u64 into r59;
-    mul r59 r39 into r60;
-    div r60 1000000000000u64 into r61;
-    sub r57 r0 into r62;
-    mul r62 7500u64 into r63;
-    div r63 10000u64 into r64;
-    is.eq r61 0u64 into r65;
-    lte r61 r64 into r66;
-    or r65 r66 into r67;
-    assert.eq r67 true;
-    mul r0 1000000000000u64 into r68;
-    div r68 r34 into r69;
-    gt r55 r69 into r70;
-    sub r55 r69 into r71;
-    ternary r70 r71 0u64 into r72;
-    set r72 into user_scaled_supply[r1];
-    gt r6 r0 into r73;
-    sub r6 r0 into r74;
-    ternary r73 r74 0u64 into r75;
-    set r75 into total_deposited[0field];
-    get.or_use available_liquidity[0field] 0u64 into r76;
-    gt r76 r0 into r77;
-    sub r76 r0 into r78;
-    ternary r77 r78 0u64 into r79;
-    set r79 into available_liquidity[0field];
+    cast r55 into r56 as u128;
+    cast r34 into r57 as u128;
+    mul r56 r57 into r58;
+    div r58 1000000000000u128 into r59;
+    cast r59 into r60 as u64;
+    lte r0 r60 into r61;
+    assert.eq r61 true;
+    get.or_use user_scaled_borrow[r1] 0u64 into r62;
+    cast r62 into r63 as u128;
+    cast r39 into r64 as u128;
+    mul r63 r64 into r65;
+    div r65 1000000000000u128 into r66;
+    cast r66 into r67 as u64;
+    sub r60 r0 into r68;
+    mul r68 7500u64 into r69;
+    div r69 10000u64 into r70;
+    is.eq r67 0u64 into r71;
+    lte r67 r70 into r72;
+    or r71 r72 into r73;
+    assert.eq r73 true;
+    cast r0 into r74 as u128;
+    mul r74 1000000000000u128 into r75;
+    cast r34 into r76 as u128;
+    div r75 r76 into r77;
+    cast r77 into r78 as u64;
+    gt r55 r78 into r79;
+    sub r55 r78 into r80;
+    ternary r79 r80 0u64 into r81;
+    set r81 into user_scaled_supply[r1];
+    gt r6 r0 into r82;
+    sub r6 r0 into r83;
+    ternary r82 r83 0u64 into r84;
+    set r84 into total_deposited[0field];
+    get.or_use available_liquidity[0field] 0u64 into r85;
+    gt r85 r0 into r86;
+    sub r85 r0 into r87;
+    ternary r86 r87 0u64 into r88;
+    set r88 into available_liquidity[0field];
 
 function borrow:
     input r0 as u64.public;
@@ -299,7 +311,7 @@ function borrow:
     cast self.caller 1field 0u64 0u64 r0 0u64 into r3 as UserActivity.record;
     async borrow r0 r2 into r4;
     output r3 as UserActivity.record;
-    output r4 as lending_pool_usdcx_v16.aleo/borrow.future;
+    output r4 as lending_pool_usdcx_v17.aleo/borrow.future;
 
 finalize borrow:
     input r0 as u64.public;
@@ -364,29 +376,38 @@ finalize borrow:
     set r48 into supply_apy[0field];
     set r51 into borrow_apy[0field];
     get.or_use user_scaled_supply[r1] 0u64 into r55;
-    mul r55 r34 into r56;
-    div r56 1000000000000u64 into r57;
-    mul r57 7500u64 into r58;
-    div r58 10000u64 into r59;
-    get.or_use user_scaled_borrow[r1] 0u64 into r60;
-    mul r60 r39 into r61;
-    div r61 1000000000000u64 into r62;
-    add r62 r0 into r63;
-    lte r63 r59 into r64;
-    assert.eq r64 true;
-    get.or_use available_liquidity[0field] 0u64 into r65;
-    lte r0 r65 into r66;
-    assert.eq r66 true;
-    mul r0 1000000000000u64 into r67;
-    div r67 r39 into r68;
-    add r60 r68 into r69;
-    set r69 into user_scaled_borrow[r1];
-    add r7 r0 into r70;
-    set r70 into total_borrowed[0field];
-    gt r65 r0 into r71;
-    sub r65 r0 into r72;
-    ternary r71 r72 0u64 into r73;
-    set r73 into available_liquidity[0field];
+    cast r55 into r56 as u128;
+    cast r34 into r57 as u128;
+    mul r56 r57 into r58;
+    div r58 1000000000000u128 into r59;
+    cast r59 into r60 as u64;
+    mul r60 7500u64 into r61;
+    div r61 10000u64 into r62;
+    get.or_use user_scaled_borrow[r1] 0u64 into r63;
+    cast r63 into r64 as u128;
+    cast r39 into r65 as u128;
+    mul r64 r65 into r66;
+    div r66 1000000000000u128 into r67;
+    cast r67 into r68 as u64;
+    add r68 r0 into r69;
+    lte r69 r62 into r70;
+    assert.eq r70 true;
+    get.or_use available_liquidity[0field] 0u64 into r71;
+    lte r0 r71 into r72;
+    assert.eq r72 true;
+    cast r0 into r73 as u128;
+    mul r73 1000000000000u128 into r74;
+    cast r39 into r75 as u128;
+    div r74 r75 into r76;
+    cast r76 into r77 as u64;
+    add r63 r77 into r78;
+    set r78 into user_scaled_borrow[r1];
+    add r7 r0 into r79;
+    set r79 into total_borrowed[0field];
+    gt r71 r0 into r80;
+    sub r71 r0 into r81;
+    ternary r80 r81 0u64 into r82;
+    set r82 into available_liquidity[0field];
 
 function repay:
     input r0 as test_usdcx_stablecoin.aleo/Token.record;
@@ -404,7 +425,7 @@ function repay:
     output r10 as UserActivity.record;
     output r7 as test_usdcx_stablecoin.aleo/ComplianceRecord.record;
     output r8 as test_usdcx_stablecoin.aleo/Token.record;
-    output r11 as lending_pool_usdcx_v16.aleo/repay.future;
+    output r11 as lending_pool_usdcx_v17.aleo/repay.future;
 
 finalize repay:
     input r0 as test_usdcx_stablecoin.aleo/transfer_private_to_public.future;
@@ -471,27 +492,33 @@ finalize repay:
     set r49 into supply_apy[0field];
     set r52 into borrow_apy[0field];
     get.or_use user_scaled_borrow[r2] 0u64 into r56;
-    mul r56 r40 into r57;
-    div r57 1000000000000u64 into r58;
-    lte r1 r58 into r59;
-    assert.eq r59 true;
-    mul r1 1000000000000u64 into r60;
-    div r60 r40 into r61;
-    gt r56 r61 into r62;
-    sub r56 r61 into r63;
-    ternary r62 r63 0u64 into r64;
-    set r64 into user_scaled_borrow[r2];
-    gt r8 r1 into r65;
-    sub r8 r1 into r66;
-    ternary r65 r66 0u64 into r67;
-    set r67 into total_borrowed[0field];
-    get.or_use available_liquidity[0field] 0u64 into r68;
-    add r68 r1 into r69;
-    set r69 into available_liquidity[0field];
+    cast r56 into r57 as u128;
+    cast r40 into r58 as u128;
+    mul r57 r58 into r59;
+    div r59 1000000000000u128 into r60;
+    cast r60 into r61 as u64;
+    lte r1 r61 into r62;
+    assert.eq r62 true;
+    cast r1 into r63 as u128;
+    mul r63 1000000000000u128 into r64;
+    cast r40 into r65 as u128;
+    div r64 r65 into r66;
+    cast r66 into r67 as u64;
+    gt r56 r67 into r68;
+    sub r56 r67 into r69;
+    ternary r68 r69 0u64 into r70;
+    set r70 into user_scaled_borrow[r2];
+    gt r8 r1 into r71;
+    sub r8 r1 into r72;
+    ternary r71 r72 0u64 into r73;
+    set r73 into total_borrowed[0field];
+    get.or_use available_liquidity[0field] 0u64 into r74;
+    add r74 r1 into r75;
+    set r75 into available_liquidity[0field];
 
 function accrue_interest:
     async accrue_interest into r0;
-    output r0 as lending_pool_usdcx_v16.aleo/accrue_interest.future;
+    output r0 as lending_pool_usdcx_v17.aleo/accrue_interest.future;
 
 finalize accrue_interest:
     cast block.height into r0 as u64;
@@ -559,7 +586,7 @@ function withdraw_fees:
     gt r0 0u64 into r1;
     assert.eq r1 true;
     async withdraw_fees r0 self.caller into r2;
-    output r2 as lending_pool_usdcx_v16.aleo/withdraw_fees.future;
+    output r2 as lending_pool_usdcx_v17.aleo/withdraw_fees.future;
 
 finalize withdraw_fees:
     input r0 as u64.public;

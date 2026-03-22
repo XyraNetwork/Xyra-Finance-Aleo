@@ -1341,10 +1341,12 @@ const DashboardPage: NextPageWithLayout = () => {
       let tx: string;
       switch (action) {
         case 'deposit': {
-          let tokenRecord = await getSuitableUsdcTokenRecord(requestRecords, amountMicro, publicKey);
+          let tokenRecord = await getSuitableUsdcTokenRecord(requestRecords, amountMicro, publicKey, decrypt);
           if (!tokenRecord) {
             console.warn('[USDC Deposit] No suitable USDCx record. See [getSuitableUsdcTokenRecord] logs above for details.');
-            setAmountErrorUsdc('No USDC record found with sufficient balance. Get USDCx from the faucet or select a record. Check browser console (F12) for details.');
+            setAmountErrorUsdc(
+              'No single USDCx record covers this amount (one private Token record must hold the full deposit). If your balance is split across multiple records, send USDCx to yourself to consolidate, or reduce the amount. Check console (F12) for details.',
+            );
             setStatusMessage('No USDCx record with sufficient balance.');
             setLoading(false);
             return;
@@ -1364,10 +1366,12 @@ const DashboardPage: NextPageWithLayout = () => {
           break;
         }
         case 'repay': {
-          let tokenRecord = await getSuitableUsdcTokenRecord(requestRecords, amountMicro, publicKey);
+          let tokenRecord = await getSuitableUsdcTokenRecord(requestRecords, amountMicro, publicKey, decrypt);
           if (!tokenRecord) {
             console.warn('[USDC Repay] No suitable USDCx record. See [getSuitableUsdcTokenRecord] logs above for details.');
-            setAmountErrorUsdc('No USDC record found with sufficient balance for repay. Check browser console (F12) for details.');
+            setAmountErrorUsdc(
+              'No single USDCx record covers this repay amount. Consolidate private balance into one record or reduce the amount. See console (F12).',
+            );
             setStatusMessage('No USDCx record with sufficient balance.');
             setLoading(false);
             return;
@@ -1562,9 +1566,11 @@ const DashboardPage: NextPageWithLayout = () => {
 
       switch (action) {
         case 'deposit': {
-          let tokenRecord = await getSuitableUsadTokenRecord(requestRecords, amountMicro, publicKey);
+          let tokenRecord = await getSuitableUsadTokenRecord(requestRecords, amountMicro, publicKey, decrypt);
           if (!tokenRecord) {
-            setAmountErrorUsad('No USAD record found with sufficient balance. Get USAD from the faucet or select a record. Check browser console (F12) for details.');
+            setAmountErrorUsad(
+              'No single USAD record covers this amount (one private Token record must hold the full deposit). Consolidate balance or reduce the amount. See console (F12).',
+            );
             setStatusMessage('No USADx record with sufficient balance.');
             setLoading(false);
             return;
@@ -1585,9 +1591,11 @@ const DashboardPage: NextPageWithLayout = () => {
         }
 
         case 'repay': {
-          let tokenRecord = await getSuitableUsadTokenRecord(requestRecords, amountMicro, publicKey);
+          let tokenRecord = await getSuitableUsadTokenRecord(requestRecords, amountMicro, publicKey, decrypt);
           if (!tokenRecord) {
-            setAmountErrorUsad('No USAD record found with sufficient balance for repay. Check browser console (F12) for details.');
+            setAmountErrorUsad(
+              'No single USAD record covers this repay amount. Consolidate private balance or reduce the amount. See console (F12).',
+            );
             setStatusMessage('No USAD record with sufficient balance.');
             setLoading(false);
             return;

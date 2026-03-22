@@ -5,11 +5,14 @@
 // (Token record, amount u64 → u128 at call, [MerkleProof; 2]).
 //
 // MerkleProof must be the imported stablecoin type (not a local struct).
+//
+// Stablecoin Token.amount is u128; pool public amounts are u64 in the same micro-unit scale — no mismatch.
+// Index math uses u128 intermediates so `amount * INDEX_SCALE` cannot u64-overflow (~>18.45M micro per tx).
 // ============================================================
 
 import test_usad_stablecoin.aleo;
 
-program lending_pool_usad_v16.aleo {
+program lending_pool_usad_v17.aleo {
 
     const INDEX_SCALE: u64       = 1_000_000_000_000u64;
     const SCALE: u64             = 10_000u64;
@@ -242,7 +245,7 @@ async function finalize_deposit(
     Mapping::set(supply_apy,          id, new_s_apy);
     Mapping::set(borrow_apy,          id, new_b_apy);
 
-    let scaled_in:    u64 = (amount * INDEX_SCALE) / new_sup_idx;
+    let scaled_in: u64 = ((amount as u128) * (INDEX_SCALE as u128) / (new_sup_idx as u128)) as u64;
     let prev_scaled:  u64 = Mapping::get_or_use(user_scaled_supply, user_key, 0u64);
     Mapping::set(user_scaled_supply, user_key, prev_scaled + scaled_in);
 
@@ -300,16 +303,16 @@ async function finalize_withdraw(
     Mapping::set(borrow_apy,          id, new_b_apy);
 
     let scaled_sup:   u64 = Mapping::get_or_use(user_scaled_supply, user_key, 0u64);
-    let real_balance: u64 = (scaled_sup * new_sup_idx) / INDEX_SCALE;
+    let real_balance: u64 = ((scaled_sup as u128) * (new_sup_idx as u128) / (INDEX_SCALE as u128)) as u64;
     assert(amount <= real_balance);
 
     let scaled_bor:   u64 = Mapping::get_or_use(user_scaled_borrow, user_key, 0u64);
-    let real_debt:    u64 = (scaled_bor * new_bor_idx) / INDEX_SCALE;
+    let real_debt: u64 = ((scaled_bor as u128) * (new_bor_idx as u128) / (INDEX_SCALE as u128)) as u64;
     let remaining:    u64 = real_balance - amount;
     let max_debt:     u64 = (remaining * LTV_FACTOR) / SCALE;
     assert(real_debt == 0u64 || real_debt <= max_debt);
 
-    let scaled_out:   u64 = (amount * INDEX_SCALE) / new_sup_idx;
+    let scaled_out: u64 = ((amount as u128) * (INDEX_SCALE as u128) / (new_sup_idx as u128)) as u64;
     let new_scaled:   u64 = scaled_sup > scaled_out ? scaled_sup - scaled_out : 0u64;
     Mapping::set(user_scaled_supply, user_key, new_scaled);
 
@@ -369,16 +372,16 @@ async function finalize_borrow(
     Mapping::set(borrow_apy,          id, new_b_apy);
 
     let scaled_sup:       u64 = Mapping::get_or_use(user_scaled_supply, user_key, 0u64);
-    let collateral_value: u64 = (scaled_sup * new_sup_idx) / INDEX_SCALE;
+    let collateral_value: u64 = ((scaled_sup as u128) * (new_sup_idx as u128) / (INDEX_SCALE as u128)) as u64;
     let max_borrow:       u64 = (collateral_value * LTV_FACTOR) / SCALE;
     let scaled_bor:       u64 = Mapping::get_or_use(user_scaled_borrow, user_key, 0u64);
-    let existing_debt:    u64 = (scaled_bor * new_bor_idx) / INDEX_SCALE;
+    let existing_debt: u64 = ((scaled_bor as u128) * (new_bor_idx as u128) / (INDEX_SCALE as u128)) as u64;
     assert(existing_debt + amount <= max_borrow);
 
     let avail:            u64 = Mapping::get_or_use(available_liquidity, id, 0u64);
     assert(amount <= avail);
 
-    let scaled_in:        u64 = (amount * INDEX_SCALE) / new_bor_idx;
+    let scaled_in: u64 = ((amount as u128) * (INDEX_SCALE as u128) / (new_bor_idx as u128)) as u64;
     Mapping::set(user_scaled_borrow, user_key, scaled_bor + scaled_in);
 
     Mapping::set(total_borrowed,      id, borrowed + amount);
@@ -438,11 +441,11 @@ async function finalize_repay(
     Mapping::set(borrow_apy,          id, new_b_apy);
 
     let scaled_bor:   u64 = Mapping::get_or_use(user_scaled_borrow, user_key, 0u64);
-    let real_debt:    u64 = (scaled_bor * new_bor_idx) / INDEX_SCALE;
+    let real_debt: u64 = ((scaled_bor as u128) * (new_bor_idx as u128) / (INDEX_SCALE as u128)) as u64;
     assert(amount <= real_debt);
     let repay_amt:    u64 = amount;
 
-    let scaled_out:   u64 = (repay_amt * INDEX_SCALE) / new_bor_idx;
+    let scaled_out: u64 = ((repay_amt as u128) * (INDEX_SCALE as u128) / (new_bor_idx as u128)) as u64;
     let new_scaled:   u64 = scaled_bor > scaled_out ? scaled_bor - scaled_out : 0u64;
     Mapping::set(user_scaled_borrow, user_key, new_scaled);
 

@@ -1648,6 +1648,37 @@ export function parseUsdcAmountFromPlaintext(plaintext: string): bigint | null {
 }
 
 /**
+ * Resolve Token record balance in micro-units (u128 on-chain). Used so we never pick a record that
+ * cannot cover `transfer_private_to_public` (would fail with u128 underflow, e.g. 7500 - 10000).
+ */
+async function getTokenRecordAmountMicroUsdc(
+  rec: any,
+  decrypt?: (cipherText: string) => Promise<string>
+): Promise<bigint | null> {
+  const amt =
+    rec?.data?.amount ??
+    rec?.amount ??
+    rec?.data?.amount_ ??
+    (rec?.data && typeof rec.data === 'object' && (rec.data as any).amount);
+  let val = parseUsdcAmount(amt);
+  if (val !== null) return val;
+  if (rec?.plaintext && typeof rec.plaintext === 'string') {
+    val = parseUsdcAmountFromPlaintext(rec.plaintext);
+    if (val !== null) return val;
+  }
+  const cipher = rec?.recordCiphertext ?? rec?.record_ciphertext ?? rec?.ciphertext;
+  if (cipher && decrypt) {
+    try {
+      const plain = await decrypt(cipher);
+      if (plain) return parseUsdcAmountFromPlaintext(plain);
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+/**
  * Get total private USDC balance (test_usdcx_stablecoin.aleo Token records) in human USDC.
  * Sums amount from all unspent Token records; uses decrypt for encrypted records.
  * Returns 0 if no records or on error.
@@ -1765,16 +1796,21 @@ function getUsdcRecordBlockHeight(rec: any): number | null {
  * Fetch a USDCx Token record from the wallet with balance >= amount.
  * Supports chain format: { programName, recordName: "Token", recordCiphertext, spent, ... } (amount in ciphertext).
  * Returns the record object; use formatUsdcRecordForInput(record) for the transition input if needed.
+ *
+ * **One record must cover the full deposit/repay**: the stablecoin debits a single Token record. If your
+ * balance is split across multiple records, consolidate (e.g. private transfer to self) first.
+ * Pass `decrypt` so encrypted amounts can be verified; without it, records without plaintext may be skipped.
  */
 export async function getSuitableUsdcTokenRecord(
   requestRecords: (program: string, includeSpent?: boolean) => Promise<any[]>,
   amount: number,
-  _publicKey: string
+  _publicKey: string,
+  decrypt?: (cipherText: string) => Promise<string>
 ): Promise<any | null> {
   const amountU128 = BigInt(amount);
   const logPrefix = '[getSuitableUsdcTokenRecord]';
 
-  console.log(`${logPrefix} Requesting records for program: ${USDC_TOKEN_PROGRAM}, amount required: ${amount} (u64, record uses 6 decimals)`);
+  console.log(`${logPrefix} Requesting records for program: ${USDC_TOKEN_PROGRAM}, amount required: ${amount} (micro units u64)`);
 
   let records: any[];
   try {
@@ -1840,8 +1876,6 @@ export async function getSuitableUsdcTokenRecord(
 
   console.log(`${logPrefix} Inspecting ${sortedRecords.length} record(s)...`);
 
-  const unspentTokenRecords: any[] = [];
-
   for (let i = 0; i < sortedRecords.length; i++) {
     const rec = sortedRecords[i];
     const spent = rec?.spent === true || rec?.data?.spent === true;
@@ -1870,39 +1904,29 @@ export async function getSuitableUsdcTokenRecord(
       continue;
     }
 
-    // If we have plaintext amount, require sufficient balance and reject 0-balance records
-    const amt =
-      rec?.data?.amount ??
-      rec?.amount ??
-      rec?.data?.amount_ ??
-      (rec?.data && typeof rec.data === 'object' && (rec.data as any).amount);
-    const val = parseUsdcAmount(amt);
+    const val = await getTokenRecordAmountMicroUsdc(rec, decrypt);
 
-    if (val !== null) {
-      if (val === BigInt(0)) {
-        console.log(`${logPrefix} Record[${i}] skipped (amount is 0; cannot use for deposit/repay)`);
-        continue;
-      }
-      console.log(`${logPrefix} Record[${i}] amount parsed: ${String(val)} (required >= ${amountU128}), sufficient: ${val >= amountU128}`);
-      if (val >= amountU128) {
-        console.log(`${logPrefix} Using record[${i}] for deposit/repay (has sufficient amount)`);
-        return rec;
-      }
-      // Has plaintext but insufficient; don't use as fallback
+    if (val === null) {
+      console.log(
+        `${logPrefix} Record[${i}] skipped (could not read amount; connect wallet decrypt or ensure record exposes plaintext)`,
+      );
       continue;
     }
-
-    // No plaintext amount (encrypted); can use as fallback if we have no better option
-    unspentTokenRecords.push(rec);
-    console.log(`${logPrefix} Record[${i}] has no plaintext amount (encrypted). Added to fallback list.`);
+    if (val === BigInt(0)) {
+      console.log(`${logPrefix} Record[${i}] skipped (amount is 0)`);
+      continue;
+    }
+    console.log(`${logPrefix} Record[${i}] amount: ${String(val)} micro (need >= ${String(amountU128)}): ${val >= amountU128}`);
+    if (val >= amountU128) {
+      console.log(`${logPrefix} Using record[${i}] for deposit/repay`);
+      return rec;
+    }
   }
 
-  if (unspentTokenRecords.length > 0) {
-    console.log(`${logPrefix} No record with plaintext amount >= ${amount}. Using first unspent Token record with encrypted amount; program will assert balance.`);
-    return unspentTokenRecords[0];
-  }
-
-  console.warn(`${logPrefix} No unspent USDCx Token record. Check that you have private USDCx (transfer_public_to_private) and record access.`);
+  console.warn(
+    `${logPrefix} No single Token record holds >= ${String(amountU128)} micro. ` +
+      'Total balance may be split across records — consolidate into one record (private transfer to yourself) then retry.',
+  );
   return null;
 }
 
@@ -1911,17 +1935,19 @@ export async function getSuitableUsdcTokenRecord(
  * Mirrors getSuitableUsdcTokenRecord, but queries `test_usad_stablecoin.aleo` records.
  *
  * IMPORTANT: `amount` is in micro units (u64) matching the USAD Token record amount type.
+ * One record must cover the full amount — pass `decrypt` to verify encrypted balances.
  */
 export async function getSuitableUsadTokenRecord(
   requestRecords: (program: string, includeSpent?: boolean) => Promise<any[]>,
   amount: number,
-  _publicKey: string
+  _publicKey: string,
+  decrypt?: (cipherText: string) => Promise<string>
 ): Promise<any | null> {
   const amountU128 = BigInt(amount);
   const logPrefix = '[getSuitableUsadTokenRecord]';
 
   console.log(
-    `${logPrefix} Requesting records for program: ${USAD_TOKEN_PROGRAM}, amount required: ${amount} (u64, record uses 6 decimals)`,
+    `${logPrefix} Requesting records for program: ${USAD_TOKEN_PROGRAM}, amount required: ${amount} (micro units u64)`,
   );
 
   let records: any[];
@@ -1982,8 +2008,6 @@ export async function getSuitableUsadTokenRecord(
 
   console.log(`${logPrefix} Inspecting ${sortedRecords.length} record(s)...`);
 
-  const unspentTokenRecords: any[] = [];
-
   for (let i = 0; i < sortedRecords.length; i++) {
     const rec = sortedRecords[i];
     const spent = rec?.spent === true || rec?.data?.spent === true;
@@ -2009,37 +2033,29 @@ export async function getSuitableUsadTokenRecord(
       continue;
     }
 
-    const amt =
-      rec?.data?.amount ??
-      rec?.amount ??
-      rec?.data?.amount_ ??
-      (rec?.data && typeof rec.data === 'object' && (rec.data as any).amount);
+    const val = await getTokenRecordAmountMicroUsdc(rec, decrypt);
 
-    const val = parseUsdcAmount(amt);
-
-    if (val !== null) {
-      if (val === BigInt(0)) {
-        console.log(`${logPrefix} Record[${i}] skipped (amount is 0; cannot use for deposit/repay)`);
-        continue;
-      }
-      console.log(`${logPrefix} Record[${i}] amount parsed: ${String(val)} (required >= ${amountU128}), sufficient: ${val >= amountU128}`);
-      if (val >= amountU128) {
-        console.log(`${logPrefix} Using record[${i}] for deposit/repay (has sufficient amount)`);
-        return rec;
-      }
+    if (val === null) {
+      console.log(
+        `${logPrefix} Record[${i}] skipped (could not read amount; connect wallet decrypt or ensure record exposes plaintext)`,
+      );
       continue;
     }
-
-    unspentTokenRecords.push(rec);
-    console.log(`${logPrefix} Record[${i}] has no plaintext amount (encrypted). Added to fallback list.`);
+    if (val === BigInt(0)) {
+      console.log(`${logPrefix} Record[${i}] skipped (amount is 0)`);
+      continue;
+    }
+    console.log(`${logPrefix} Record[${i}] amount: ${String(val)} micro (need >= ${String(amountU128)}): ${val >= amountU128}`);
+    if (val >= amountU128) {
+      console.log(`${logPrefix} Using record[${i}] for deposit/repay`);
+      return rec;
+    }
   }
 
-  if (unspentTokenRecords.length > 0) {
-    console.log(`${logPrefix} No record with plaintext amount >= ${amount}. Using first unspent Token record with encrypted amount; program will assert balance.`);
-    return unspentTokenRecords[0];
-  }
-
-  console.warn(`${logPrefix} No unspent USAD Token record found. Check that you have private USAD (transfer_public_to_private) and record access.`);
+  console.warn(
+    `${logPrefix} No single USAD Token record holds >= ${String(amountU128)} micro. ` +
+      'If balance is split across records, consolidate (private transfer to self). Ensure private USAD and wallet record access.',
+  );
   return null;
 }
 
@@ -2061,6 +2077,12 @@ function handleUsdcTxError(error: any, action: string): string {
         'See programusdc/inputs/README_DEPOSIT_EXAMPLE.md for details.'
     );
   }
+  if (rawMsg.includes('integer subtraction') || rawMsg.includes('underflow')) {
+    throw new Error(
+      `${action} failed: The chosen private USDCx Token record does not hold enough for this transfer. ` +
+        'If your balance is split across multiple records, consolidate into one (private transfer to yourself) or reduce the amount.',
+    );
+  }
   throw new Error(`${action} failed: ${error?.message || 'Unknown error'}`);
 }
 
@@ -2080,6 +2102,12 @@ function handleUsadTxError(error: any, action: string): string {
     throw new Error(
       `${action} failed: Proving failed. The USAD token program requires valid Merkle proofs for your record. ` +
         'Placeholder proofs cannot be used on-chain. Obtain valid proofs from your wallet or from the token issuer.',
+    );
+  }
+  if (rawMsg.includes('integer subtraction') || rawMsg.includes('underflow')) {
+    throw new Error(
+      `${action} failed: The chosen private USAD Token record does not hold enough for this transfer. ` +
+        'Consolidate balance into one record or reduce the amount.',
     );
   }
   throw new Error(`${action} failed: ${error?.message || 'Unknown error'}`);
