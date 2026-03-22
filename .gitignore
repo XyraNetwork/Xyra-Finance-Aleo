@@ -5,6 +5,10 @@ node_modules
 *program.json*
 program/build
 program/backup
+programusad/backup
+programusad/build
+programusdc/backup
+programusdc/build
 Docs
 scripts/*.sh
 .cargo-home-34
