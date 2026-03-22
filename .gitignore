@@ -11,3 +11,6 @@ scripts/*.sh
 .cargo-home-leo
 .cargo-target-34
 .cardgo-target-leo
+.huskey
+.rustup-home-34
+.vscode-test
