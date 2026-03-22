@@ -7,3 +7,7 @@ program/build
 program/backup
 Docs
 scripts/*.sh
+*.cargo-home-34
+*.cargo-home-leo
+*.cargo-target-34
+*.cardgo-target-leo
