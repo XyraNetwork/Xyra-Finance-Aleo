@@ -11,7 +11,7 @@ type Body = {
   wallet_address: string;
   tx_id: string;
   type: 'deposit' | 'withdraw' | 'borrow' | 'repay';
-  asset: 'aleo' | 'usdcx' | 'usadx';
+  asset: 'aleo' | 'usdcx' | 'usad';
   amount: number;
   program_id?: string | null;
 };
@@ -72,7 +72,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!validTypes.includes(type)) {
     return res.status(400).json({ error: 'Invalid type' });
   }
-  const validAssets = ['aleo', 'usdcx', 'usadx'];
+  const validAssets = ['aleo', 'usdcx', 'usad'];
   if (!validAssets.includes(asset)) {
     return res.status(400).json({ error: 'Invalid asset' });
   }

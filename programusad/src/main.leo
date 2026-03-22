@@ -1,6 +1,6 @@
 // ============================================================
-// lending_pool_usad_v16.aleo
-// Same Aave-style lending logic as lending_pool_v91 (credits pool),
+// lending_pool_usad_v17.aleo
+// Same Aave-style lending logic as lending_pool_usdcx_v18 / lending_pool_v91 (credits pool),
 // with USAD stablecoin transfers: test_usad_stablecoin.aleo/transfer_private_to_public
 // (Token record, amount u64 → u128 at call, [MerkleProof; 2]).
 //
@@ -8,6 +8,8 @@
 //
 // Stablecoin Token.amount is u128; pool public amounts are u64 in the same micro-unit scale — no mismatch.
 // Index math uses u128 intermediates so `amount * INDEX_SCALE` cannot u64-overflow (~>18.45M micro per tx).
+// Interest accrual (`sup_idx * supply_rate * delta`, etc.) uses u128 intermediates — pure u64 could reject txs.
+// Pool accounting matches lending_pool_usdcx_v18; only the stablecoin import / transfer types differ (USAD vs USDCx).
 // ============================================================
 
 import test_usad_stablecoin.aleo;
@@ -53,11 +55,14 @@ program lending_pool_usad_v17.aleo {
         total_repayments:  u64,
     }
 
-    @admin(address = "aleo1a2ehlgqhvs3p7d4hqhs0tvgk954dr8gafu9kxse2mzu9a5sqxvpsrn98pr")
+    /// Leo does not allow `constructor() -> Future` / init in constructor on this toolchain.
+    /// Call `initialize()` once after deploy (admin wallet). Seeds mappings via `finalize_initialize`.
+    /// Must match lending_pool_usdcx_v18: same admin as initialize / withdraw_fees (vault is only POOL_VAULT_ADDRESS).
+    @admin(address = "aleo1rhgdu77hgyqd3xjj8ucu3jj9r2krwz6mnzyd80gncr5fxcwlh5rsvzp9px")
     async constructor() {}
 
     async transition initialize() -> Future {
-        assert(self.caller == aleo1a2ehlgqhvs3p7d4hqhs0tvgk954dr8gafu9kxse2mzu9a5sqxvpsrn98pr);
+        assert(self.caller == aleo1rhgdu77hgyqd3xjj8ucu3jj9r2krwz6mnzyd80gncr5fxcwlh5rsvzp9px);
         return finalize_initialize();
     }
 
@@ -223,15 +228,15 @@ async function finalize_deposit(
                            / (SCALE * SCALE);
 
     let new_sup_idx: u64 = do_accrue
-        ? sup_idx + (sup_idx * supply_rate * delta) / INDEX_SCALE
+        ? sup_idx + (((sup_idx as u128) * (supply_rate as u128) * (delta as u128) / (INDEX_SCALE as u128)) as u64)
         : sup_idx;
     let new_bor_idx: u64 = do_accrue
-        ? bor_idx + (bor_idx * borrow_rate * delta) / INDEX_SCALE
+        ? bor_idx + (((bor_idx as u128) * (borrow_rate as u128) * (delta as u128) / (INDEX_SCALE as u128)) as u64)
         : bor_idx;
 
-    let fee_rate:    u64 = (borrowed * borrow_rate) / INDEX_SCALE;
+    let fee_rate:    u64 = (((borrowed as u128) * (borrow_rate as u128) / (INDEX_SCALE as u128)) as u64);
     let fee_delta:   u64 = do_accrue
-        ? (fee_rate * delta * RESERVE_FACTOR) / SCALE
+        ? (((fee_rate as u128) * (delta as u128) * (RESERVE_FACTOR as u128) / (SCALE as u128)) as u64)
         : 0u64;
 
     let new_s_apy:   u64 = (supply_rate * BLOCKS_PER_YEAR * SCALE) / INDEX_SCALE;
@@ -282,14 +287,14 @@ async function finalize_withdraw(
                            / (SCALE * SCALE);
 
     let new_sup_idx: u64 = do_accrue
-        ? sup_idx + (sup_idx * supply_rate * delta) / INDEX_SCALE
+        ? sup_idx + (((sup_idx as u128) * (supply_rate as u128) * (delta as u128) / (INDEX_SCALE as u128)) as u64)
         : sup_idx;
     let new_bor_idx: u64 = do_accrue
-        ? bor_idx + (bor_idx * borrow_rate * delta) / INDEX_SCALE
+        ? bor_idx + (((bor_idx as u128) * (borrow_rate as u128) * (delta as u128) / (INDEX_SCALE as u128)) as u64)
         : bor_idx;
-    let fee_rate:    u64 = (borrowed * borrow_rate) / INDEX_SCALE;
+    let fee_rate:    u64 = (((borrowed as u128) * (borrow_rate as u128) / (INDEX_SCALE as u128)) as u64);
     let fee_delta:   u64 = do_accrue
-        ? (fee_rate * delta * RESERVE_FACTOR) / SCALE
+        ? (((fee_rate as u128) * (delta as u128) * (RESERVE_FACTOR as u128) / (SCALE as u128)) as u64)
         : 0u64;
     let new_s_apy:   u64 = (supply_rate * BLOCKS_PER_YEAR * SCALE) / INDEX_SCALE;
     let new_b_apy:   u64 = (borrow_rate * BLOCKS_PER_YEAR * SCALE) / INDEX_SCALE;
@@ -351,14 +356,14 @@ async function finalize_borrow(
                            / (SCALE * SCALE);
 
     let new_sup_idx: u64 = do_accrue
-        ? sup_idx + (sup_idx * supply_rate * delta) / INDEX_SCALE
+        ? sup_idx + (((sup_idx as u128) * (supply_rate as u128) * (delta as u128) / (INDEX_SCALE as u128)) as u64)
         : sup_idx;
     let new_bor_idx: u64 = do_accrue
-        ? bor_idx + (bor_idx * borrow_rate * delta) / INDEX_SCALE
+        ? bor_idx + (((bor_idx as u128) * (borrow_rate as u128) * (delta as u128) / (INDEX_SCALE as u128)) as u64)
         : bor_idx;
-    let fee_rate:    u64 = (borrowed * borrow_rate) / INDEX_SCALE;
+    let fee_rate:    u64 = (((borrowed as u128) * (borrow_rate as u128) / (INDEX_SCALE as u128)) as u64);
     let fee_delta:   u64 = do_accrue
-        ? (fee_rate * delta * RESERVE_FACTOR) / SCALE
+        ? (((fee_rate as u128) * (delta as u128) * (RESERVE_FACTOR as u128) / (SCALE as u128)) as u64)
         : 0u64;
     let new_s_apy:   u64 = (supply_rate * BLOCKS_PER_YEAR * SCALE) / INDEX_SCALE;
     let new_b_apy:   u64 = (borrow_rate * BLOCKS_PER_YEAR * SCALE) / INDEX_SCALE;
@@ -420,14 +425,14 @@ async function finalize_repay(
                            / (SCALE * SCALE);
 
     let new_sup_idx: u64 = do_accrue
-        ? sup_idx + (sup_idx * supply_rate * delta) / INDEX_SCALE
+        ? sup_idx + (((sup_idx as u128) * (supply_rate as u128) * (delta as u128) / (INDEX_SCALE as u128)) as u64)
         : sup_idx;
     let new_bor_idx: u64 = do_accrue
-        ? bor_idx + (bor_idx * borrow_rate * delta) / INDEX_SCALE
+        ? bor_idx + (((bor_idx as u128) * (borrow_rate as u128) * (delta as u128) / (INDEX_SCALE as u128)) as u64)
         : bor_idx;
-    let fee_rate:    u64 = (borrowed * borrow_rate) / INDEX_SCALE;
+    let fee_rate:    u64 = (((borrowed as u128) * (borrow_rate as u128) / (INDEX_SCALE as u128)) as u64);
     let fee_delta:   u64 = do_accrue
-        ? (fee_rate * delta * RESERVE_FACTOR) / SCALE
+        ? (((fee_rate as u128) * (delta as u128) * (RESERVE_FACTOR as u128) / (SCALE as u128)) as u64)
         : 0u64;
     let new_s_apy:   u64 = (supply_rate * BLOCKS_PER_YEAR * SCALE) / INDEX_SCALE;
     let new_b_apy:   u64 = (borrow_rate * BLOCKS_PER_YEAR * SCALE) / INDEX_SCALE;
@@ -480,14 +485,14 @@ async function finalize_accrue() {
                            / (SCALE * SCALE);
 
     let new_sup_idx: u64 = do_accrue
-        ? sup_idx + (sup_idx * supply_rate * delta) / INDEX_SCALE
+        ? sup_idx + (((sup_idx as u128) * (supply_rate as u128) * (delta as u128) / (INDEX_SCALE as u128)) as u64)
         : sup_idx;
     let new_bor_idx: u64 = do_accrue
-        ? bor_idx + (bor_idx * borrow_rate * delta) / INDEX_SCALE
+        ? bor_idx + (((bor_idx as u128) * (borrow_rate as u128) * (delta as u128) / (INDEX_SCALE as u128)) as u64)
         : bor_idx;
-    let fee_rate:    u64 = (borrowed * borrow_rate) / INDEX_SCALE;
+    let fee_rate:    u64 = (((borrowed as u128) * (borrow_rate as u128) / (INDEX_SCALE as u128)) as u64);
     let fee_delta:   u64 = do_accrue
-        ? (fee_rate * delta * RESERVE_FACTOR) / SCALE
+        ? (((fee_rate as u128) * (delta as u128) * (RESERVE_FACTOR as u128) / (SCALE as u128)) as u64)
         : 0u64;
     let new_s_apy:   u64 = (supply_rate * BLOCKS_PER_YEAR * SCALE) / INDEX_SCALE;
     let new_b_apy:   u64 = (borrow_rate * BLOCKS_PER_YEAR * SCALE) / INDEX_SCALE;

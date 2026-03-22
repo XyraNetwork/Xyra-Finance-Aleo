@@ -416,9 +416,9 @@ app.post('/record-transaction', async (req, res) => {
     if (!validTypes.includes(type)) {
       return res.status(400).json({ error: 'Invalid type. Must be one of: deposit, withdraw, borrow, repay' });
     }
-    const validAssets = ['aleo', 'usdcx', 'usadx'];
+    const validAssets = ['aleo', 'usdcx', 'usad'];
     if (!validAssets.includes(asset)) {
-      return res.status(400).json({ error: 'Invalid asset. Must be aleo, usdcx, or usadx' });
+      return res.status(400).json({ error: 'Invalid asset. Must be aleo, usdcx, or usad' });
     }
     const amountNum = Number(amount);
     if (!Number.isFinite(amountNum) || amountNum < 0) {

@@ -47,13 +47,13 @@ Xyra Finance is a **privacy-first lending and borrowing protocol** on Aleo—ins
 
 ### Backend (Express)
 
-- **Vault endpoints:** POST `/withdraw`, `/borrow` (ALEO credits), `/withdraw-usdc`, `/borrow-usdc` (USDCx).
+- **Vault endpoints:** POST `/withdraw`, `/borrow` (ALEO credits), `/withdraw-usdc`, `/borrow-usdc` (USDCx), `/withdraw-usad`, `/borrow-usad` (USAD).
 - **In-process queue:** Vault operations run through a queue (default concurrency 1) to avoid RPC overload and vault key contention when many users hit at once. See **`backend/docs/CONCURRENCY.md`**.
 - **CORS:** Configurable via `CORS_ORIGIN` (comma-separated) for production frontends (e.g. Vercel).
 
 ### Data (Supabase)
 
-- **transaction_history:** wallet_address, tx_id, type (deposit/withdraw/borrow/repay), asset (aleo/usdcx), amount, program_id, explorer_url, vault_tx_id, vault_explorer_url. RLS for anon SELECT/INSERT with publishable key.
+- **transaction_history:** wallet_address, tx_id, type (deposit/withdraw/borrow/repay), asset (aleo/usdcx/usad), amount, program_id, explorer_url, vault_tx_id, vault_explorer_url. RLS for anon SELECT/INSERT with publishable key.
 
 ---
 
