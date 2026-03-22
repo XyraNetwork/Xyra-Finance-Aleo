@@ -1,0 +1,40 @@
+// Copyright (C) 2019-2026 Provable Inc.
+// This file is part of the Leo library.
+
+// The Leo library is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+// The Leo library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+
+// You should have received a copy of the GNU General Public License
+// along with the Leo library. If not, see <https://www.gnu.org/licenses/>.
+
+#![forbid(unsafe_code)]
+#![allow(clippy::module_inception)]
+#![allow(clippy::upper_case_acronyms)]
+#![doc = include_str!("../README.md")]
+
+mod compiler;
+pub use compiler::*;
+
+mod options;
+pub use options::*;
+
+// Re-export types from leo_passes for convenience
+pub use leo_passes::{Bytecode, CompiledPrograms};
+
+pub mod run;
+
+#[cfg(test)]
+mod test_utils;
+
+#[cfg(test)]
+mod test_compiler;
+
+#[cfg(test)]
+mod test_execution;

@@ -4,8 +4,10 @@ import { useEffect, useState } from 'react';
 import {
   getLendingPoolState,
   getUsdcLendingPoolState,
+  getUsadLendingPoolState,
   computeAleoPoolAPY,
   computeUsdcPoolAPY,
+  computeUsadPoolAPY,
 } from '@/components/aleo/rpc';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 
@@ -22,14 +24,21 @@ export function MarketsView() {
   const [usdcSupplyAPY, setUsdcSupplyAPY] = useState<number>(0);
   const [usdcBorrowAPY, setUsdcBorrowAPY] = useState<number>(0);
 
+  const [usadTotalSupplied, setUsadTotalSupplied] = useState<number>(0);
+  const [usadTotalBorrowed, setUsadTotalBorrowed] = useState<number>(0);
+  const [usadSupplyAPY, setUsadSupplyAPY] = useState<number>(0);
+  const [usadBorrowAPY, setUsadBorrowAPY] = useState<number>(0);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     (async () => {
       try {
-        const [aleoState, usdcState] = await Promise.all([
+        const [aleoState, usdcState, usadState] = await Promise.all([
           getLendingPoolState(),
           getUsdcLendingPoolState(),
+          // USAD pool state
+          getUsadLendingPoolState(),
         ]);
         if (cancelled) return;
 
@@ -37,9 +46,12 @@ export function MarketsView() {
         const tbAleo = Number(aleoState.totalBorrowed ?? 0) || 0;
         const tsUsdc = Number(usdcState.totalSupplied ?? 0) || 0;
         const tbUsdc = Number(usdcState.totalBorrowed ?? 0) || 0;
+        const tsUsad = Number(usadState.totalSupplied ?? 0) || 0;
+        const tbUsad = Number(usadState.totalBorrowed ?? 0) || 0;
 
         const { supplyAPY: sApyAleo, borrowAPY: bApyAleo } = computeAleoPoolAPY(tsAleo, tbAleo);
         const { supplyAPY: sApyUsdc, borrowAPY: bApyUsdc } = computeUsdcPoolAPY(tsUsdc, tbUsdc);
+        const { supplyAPY: sApyUsad, borrowAPY: bApyUsad } = computeUsadPoolAPY(tsUsad, tbUsad);
 
         setAleoTotalSupplied(tsAleo / SCALE);
         setAleoTotalBorrowed(tbAleo / SCALE);
@@ -50,6 +62,11 @@ export function MarketsView() {
         setUsdcTotalBorrowed(tbUsdc / SCALE);
         setUsdcSupplyAPY(sApyUsdc * 100);
         setUsdcBorrowAPY(bApyUsdc * 100);
+
+        setUsadTotalSupplied(tsUsad / SCALE);
+        setUsadTotalBorrowed(tbUsad / SCALE);
+        setUsadSupplyAPY(sApyUsad * 100);
+        setUsadBorrowAPY(bApyUsad * 100);
       } catch (e) {
         console.error('Markets: failed to fetch pool state', e);
       } finally {
@@ -149,6 +166,16 @@ export function MarketsView() {
                     <td>{usdcAvailable.toFixed(4)}</td>
                     <td className="text-success">{usdcSupplyAPY.toFixed(2)}%</td>
                     <td className="text-warning">{usdcBorrowAPY.toFixed(2)}%</td>
+                  </tr>
+                  <tr className="border-base-300">
+                    <td>
+                      <span className="font-medium">USAD</span>
+                    </td>
+                    <td>{usadTotalSupplied.toFixed(4)}</td>
+                    <td>{usadTotalBorrowed.toFixed(4)}</td>
+                    <td>{Math.max(0, usadTotalSupplied - usadTotalBorrowed).toFixed(4)}</td>
+                    <td className="text-success">{usadSupplyAPY.toFixed(2)}%</td>
+                    <td className="text-warning">{usadBorrowAPY.toFixed(2)}%</td>
                   </tr>
                 </tbody>
               </table>

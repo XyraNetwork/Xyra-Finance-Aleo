@@ -1,4 +1,11 @@
-import { runWithdrawal, runBorrow, runWithdrawalUsdc, runBorrowUsdc } from './processWithdrawal.js';
+import {
+  runWithdrawal,
+  runBorrow,
+  runWithdrawalUsdc,
+  runBorrowUsdc,
+  runWithdrawalUsad,
+  runBorrowUsad,
+} from './processWithdrawal.js';
 import { getPendingVaultTransactions, setVaultStatus, updateVaultTx } from './supabase.js';
 
 const WATCH_INTERVAL_MS = Math.max(15_000, Number(process.env.VAULT_WATCHER_INTERVAL_MS) || 60_000);
@@ -50,15 +57,21 @@ async function runWatchCycle() {
 
     inProgressKeys.add(key);
 
-    const isUsdc = (asset || '').toLowerCase() === 'usdcx';
+    const assetLower = (asset || '').toLowerCase();
+    const isUsdc = assetLower === 'usdcx';
+    const isUsad = assetLower === 'usadx';
     const run =
       type === 'withdraw'
-        ? isUsdc
-          ? () => runWithdrawalUsdc(wallet_address, amountNum)
-          : () => runWithdrawal(wallet_address, amountNum)
-        : isUsdc
-          ? () => runBorrowUsdc(wallet_address, amountNum)
-          : () => runBorrow(wallet_address, amountNum);
+        ? isUsad
+          ? () => runWithdrawalUsad(wallet_address, amountNum)
+          : isUsdc
+            ? () => runWithdrawalUsdc(wallet_address, amountNum)
+            : () => runWithdrawal(wallet_address, amountNum)
+        : isUsad
+          ? () => runBorrowUsad(wallet_address, amountNum)
+          : isUsdc
+            ? () => runBorrowUsdc(wallet_address, amountNum)
+            : () => runBorrow(wallet_address, amountNum);
 
     runVaultTaskRef(run)
       .then((transactionId) => {

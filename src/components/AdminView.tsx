@@ -2,8 +2,9 @@
 
 import React, { useState } from 'react';
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
-import { LENDING_POOL_PROGRAM_ID } from '@/components/aleo/rpc';
+import { LENDING_POOL_PROGRAM_ID, USDC_LENDING_POOL_PROGRAM_ID } from '@/components/aleo/rpc';
 import { lendingInitializeAleoPool } from '@/components/aleo/rpc';
+import { lendingInitializeUsdcPool } from '@/components/aleo/rpc';
 import { ADMIN_ADDRESS } from '@/types';
 
 export function AdminView() {
@@ -11,12 +12,16 @@ export function AdminView() {
   const [initLoading, setInitLoading] = useState(false);
   const [initMessage, setInitMessage] = useState<string | null>(null);
   const [initTxId, setInitTxId] = useState<string | null>(null);
+  const [initUsdcLoading, setInitUsdcLoading] = useState(false);
+  const [initUsdcMessage, setInitUsdcMessage] = useState<string | null>(null);
+  const [initUsdcTxId, setInitUsdcTxId] = useState<string | null>(null);
+  const normalizedAdmin = (ADMIN_ADDRESS || '').trim().toLowerCase();
+  const normalizedAddress = (address || '').trim().toLowerCase();
 
   const isAdmin =
     typeof address === 'string' &&
-    typeof ADMIN_ADDRESS === 'string' &&
-    ADMIN_ADDRESS.length > 0 &&
-    address === ADMIN_ADDRESS;
+    normalizedAdmin.length > 0 &&
+    normalizedAddress === normalizedAdmin;
 
   const handleInitialize = async () => {
     if (!executeTransaction || !isAdmin) return;
@@ -36,6 +41,27 @@ export function AdminView() {
       setInitMessage(msg);
     } finally {
       setInitLoading(false);
+    }
+  };
+
+  const handleInitializeUsdc = async () => {
+    if (!executeTransaction || !isAdmin) return;
+    setInitUsdcLoading(true);
+    setInitUsdcMessage(null);
+    setInitUsdcTxId(null);
+    try {
+      const txId = await lendingInitializeUsdcPool(executeTransaction);
+      if (txId === '__CANCELLED__') {
+        setInitUsdcMessage('Transaction cancelled.');
+        return;
+      }
+      setInitUsdcTxId(txId);
+      setInitUsdcMessage('Transaction submitted. Wait for confirmation.');
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Initialize failed';
+      setInitUsdcMessage(msg);
+    } finally {
+      setInitUsdcLoading(false);
     }
   };
 
@@ -98,6 +124,29 @@ export function AdminView() {
           )}
           {initTxId && initTxId !== '__CANCELLED__' && (
             <p className="mt-1 text-xs text-base-content/60 font-mono break-all">{initTxId}</p>
+          )}
+        </div>
+
+        <div className="rounded-lg bg-base-300/50 p-4 border border-base-300">
+          <div className="font-medium text-base-content mb-1">Initialize USDC pool</div>
+          <p className="text-sm text-base-content/70 mb-3">
+            One-time setup: seeds USDC pool mappings (indices, liquidity, APY). Program: <span className="font-mono text-xs">{USDC_LENDING_POOL_PROGRAM_ID}</span>
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={handleInitializeUsdc}
+            disabled={initUsdcLoading}
+          >
+            {initUsdcLoading ? 'Submitting…' : 'Initialize USDC pool'}
+          </button>
+          {initUsdcMessage && (
+            <p className={`mt-3 text-sm ${initUsdcTxId ? 'text-success' : 'text-error'}`}>
+              {initUsdcMessage}
+            </p>
+          )}
+          {initUsdcTxId && initUsdcTxId !== '__CANCELLED__' && (
+            <p className="mt-1 text-xs text-base-content/60 font-mono break-all">{initUsdcTxId}</p>
           )}
         </div>
       </div>

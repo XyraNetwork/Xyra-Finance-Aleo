@@ -1,5 +1,13 @@
 import { JSONRPCClient } from 'json-rpc-2.0';
-import { BOUNTY_PROGRAM_ID, USDC_POOL_PROGRAM_ID, USDC_TOKEN_PROGRAM_ID, CURRENT_NETWORK, CURRENT_RPC_URL } from '@/types';
+import {
+  BOUNTY_PROGRAM_ID,
+  USDC_POOL_PROGRAM_ID,
+  USDC_TOKEN_PROGRAM_ID,
+  USAD_POOL_PROGRAM_ID,
+  USAD_TOKEN_PROGRAM_ID,
+  CURRENT_NETWORK,
+  CURRENT_RPC_URL,
+} from '@/types';
 import { Network } from '@provablehq/aleo-types';
 import { frontendLogger } from '@/utils/logger';
 import { TREASURY_ADDRESS, getTreasuryRequestMessage } from '@/config/treasury';
@@ -10,6 +18,7 @@ import { TREASURY_ADDRESS, getTreasuryRequestMessage } from '@/config/treasury';
 // For clarity, alias the lending pool program IDs.
 export const LENDING_POOL_PROGRAM_ID = BOUNTY_PROGRAM_ID;
 export const USDC_LENDING_POOL_PROGRAM_ID = USDC_POOL_PROGRAM_ID;
+export const USAD_LENDING_POOL_PROGRAM_ID = USAD_POOL_PROGRAM_ID;
 export const CREDITS_PROGRAM_ID = 'credits.aleo';
 
 /**
@@ -991,14 +1000,571 @@ export async function lendingWithdraw(
 // - withdraw/borrow: 1 input — amount (micro-USDC). Backend sends USDCx from vault to user.
 // Amount in program is micro-USDC (1 USDC = 1_000_000). RPC accepts human USDC and converts to micro for transitions.
 const USDC_TOKEN_PROGRAM = USDC_TOKEN_PROGRAM_ID;
+const USDC_FREEZELIST_PROGRAM_ID =
+  process.env.NEXT_PUBLIC_USDCX_FREEZELIST_PROGRAM_ID || 'test_usdcx_freezelist.aleo';
+
+// --- USAD Pool (lending_pool_usad_v12.aleo) ---
+const USAD_TOKEN_PROGRAM = USAD_TOKEN_PROGRAM_ID;
+const USAD_FREEZELIST_PROGRAM_ID =
+  process.env.NEXT_PUBLIC_USADX_FREEZELIST_PROGRAM_ID || 'test_usad_freezelist.aleo';
 
 /**
- * Placeholder [MerkleProof; 2] matching wallet format: leaf_index 1u32, 16 siblings per proof.
- * Same shape as wallet: "[{ siblings: [0field,...], leaf_index: 1u32 }, { ... }]".
- * Placeholder (all zeros) still causes "proving failed" on-chain; use wallet/API proofs when available.
+ * Static Merkle proof pair for USDCx deposit/repay fallback.
+ * Sourced from `programusdc/inputs/deposit_proofs.in`.
  */
 const DEFAULT_USDC_MERKLE_PROOFS =
   '[{ siblings: [0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field], leaf_index: 1u32 }, { siblings: [0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field], leaf_index: 1u32 }]';
+
+/**
+ * Single-line Leo literal for wallets (test_transfer_usdcx v3/v4, lending pools with stablecoin MerkleProof).
+ * Rejects accidental paste of .aleo IR — that produces errors like:
+ * "Failed to parse string ... Remaining invalid string is: \"input r2 as [test_usdcx_stablecoin.aleo/MerkleProof; 2u32]..."
+ */
+function normalizeMerkleProofLiteralForWallet(s: string, label: string): string {
+  const t = String(s).trim().replace(/\s+/g, ' ');
+  if (t.length > 12_000) {
+    throw new Error(
+      `${label}: Merkle proof string is too long (${t.length} chars). Expected a compact Leo literal (two MerkleProof structs).`,
+    );
+  }
+  const looksLikeProgramIr =
+    (t.includes('input r0 as') || t.includes('input r2 as') || t.includes('function deposit')) &&
+    (t.includes('finalize ') || t.includes('program ') || t.includes('constructor'));
+  if (looksLikeProgramIr) {
+    throw new Error(
+      `${label}: The proof field contains Aleo program text, not a Merkle proof. ` +
+        'Pass only a Leo literal like [{ siblings: [0field,...], leaf_index: 1u32 }, { ... }]. ' +
+        'Do not paste build/main.aleo or deployment IR into the proof input.',
+    );
+  }
+  if (!t.startsWith('[') || !t.includes('siblings') || !t.includes('leaf_index')) {
+    throw new Error(
+      `${label}: Merkle proof must be a Leo array of two structs with siblings and leaf_index.`,
+    );
+  }
+  return t;
+}
+
+function encodeUsdcProofPair(proofs: any): string | null {
+  if (typeof proofs === 'string') {
+    const s = proofs.trim();
+    if (s.startsWith('[') && s.includes('siblings')) return s;
+    return null;
+  }
+  if (!Array.isArray(proofs) || proofs.length < 2) return null;
+  const raw = [proofs[0], proofs[1]].map((p) => (typeof p === 'string' ? p.trim() : JSON.stringify(p)));
+  if (!raw[0] || !raw[1] || !raw[0].includes('siblings') || !raw[1].includes('siblings')) return null;
+  return `[${raw[0]}, ${raw[1]}]`;
+}
+
+async function getFreezeListIndex0(): Promise<string | null> {
+  try {
+    // NullPay method: use AleoNetworkClient for freeze_list_index mapping.
+    const { AleoNetworkClient } = await import('@provablehq/sdk');
+    const client = new AleoNetworkClient('https://api.provable.com/v1');
+    const mappingValue = await client.getProgramMappingValue(
+      USDC_FREEZELIST_PROGRAM_ID,
+      'freeze_list_index',
+      '0u32',
+    );
+    return mappingValue ? String(mappingValue).replace(/["']/g, '') : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getFreezeListRoot(): Promise<string | null> {
+  try {
+    const response = await fetch(
+      `https://api.provable.com/v2/testnet/program/${USDC_FREEZELIST_PROGRAM_ID}/mapping/freeze_list_root/1u8`,
+    );
+    if (!response.ok) return null;
+    const value = await response.json();
+    return value ? String(value).replace(/["']/g, '') : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getFreezeListCount(): Promise<number> {
+  try {
+    const response = await fetch(
+      `https://api.provable.com/v2/testnet/program/${USDC_FREEZELIST_PROGRAM_ID}/mapping/freeze_list_last_index/true`,
+    );
+    if (!response.ok) return 0;
+    const value = await response.json();
+    const parsed = parseInt(String(value).replace('u32', '').replace(/["']/g, ''), 10);
+    return Number.isFinite(parsed) ? parsed + 1 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function generateFreezeListProof(targetIndex: number = 1, occupiedLeafValue?: string): Promise<string> {
+  try {
+    // NullPay method: direct import from @provablehq/wasm.
+    const { Poseidon4, Field } = await import('@provablehq/wasm');
+
+    const hasher = new Poseidon4();
+
+    // Precompute empty hashes for each level.
+    const emptyHashes: string[] = [];
+    let currentEmpty = '0field';
+    for (let i = 0; i < 16; i++) {
+      emptyHashes.push(currentEmpty);
+      const f = Field.fromString(currentEmpty);
+      const nextHashField = hasher.hash([f, f]);
+      currentEmpty = nextHashField.toString();
+    }
+
+    let currentHash = '0field';
+    let currentIndex = targetIndex;
+    const siblings: string[] = [];
+
+    const normalizeFieldLiteral = (v: string): string => {
+      const t = String(v).trim();
+      // Expect Leo field literals like "123field". If we get a bare number, append "field".
+      return t.endsWith('field') ? t : `${t}field`;
+    };
+
+    for (let level = 0; level < 16; level++) {
+      const isLeft = currentIndex % 2 === 0;
+      const siblingIndex = isLeft ? currentIndex + 1 : currentIndex - 1;
+
+      let siblingHash = emptyHashes[level];
+      if (level === 0 && siblingIndex === 0 && occupiedLeafValue) {
+        siblingHash = occupiedLeafValue;
+      }
+      siblings.push(normalizeFieldLiteral(siblingHash));
+
+      const fCurrent = Field.fromString(currentHash);
+      const fSibling = Field.fromString(normalizeFieldLiteral(siblingHash));
+      const input = isLeft ? [fCurrent, fSibling] : [fSibling, fCurrent];
+      const nextHashField = hasher.hash(input);
+      currentHash = nextHashField.toString();
+      currentIndex = Math.floor(currentIndex / 2);
+    }
+
+    return `{ siblings: [${siblings.join(', ')}], leaf_index: ${targetIndex}u32 }`;
+  } catch (e: any) {
+    console.warn('Merkle Proof Generation Warning (using fallback):', e?.message || e);
+    const s = Array(16).fill('0field').join(', ');
+    return `{ siblings: [${s}], leaf_index: ${targetIndex}u32 }`;
+  }
+}
+
+async function generateNullPayStyleUsdcProofPair(): Promise<string> {
+  // Match NullPay flow: fetch freeze-list state before generating proofs.
+  const [root, count, index0] = await Promise.all([
+    getFreezeListRoot(),
+    getFreezeListCount(),
+    getFreezeListIndex0(),
+  ]);
+  let index0Field: string | undefined = undefined;
+  if (index0) {
+    try {
+      const { Address } = await import('@provablehq/wasm');
+      const addr = Address.from_string(index0);
+      const grp = addr.toGroup();
+      index0Field = grp.toXCoordinate().toString();
+    } catch (e: any) {
+      console.warn('[USDC proofs] Failed to convert freeze_list_index[0] address to field:', e?.message || e);
+    }
+  }
+  console.log(
+    `[USDC proofs] Freeze-list state -> root: ${root ?? 'null'}, count: ${count}, index[0]: ${index0 ?? 'null'}, index0Field: ${index0Field ?? 'null'}`,
+  );
+  const proof = await generateFreezeListProof(1, index0Field);
+  return `[${proof}, ${proof}]`;
+}
+
+async function getUsdcMerkleProofsInput(tokenRecord: any, proofs?: [string, string] | string): Promise<string> {
+  const out = (s: string) => normalizeMerkleProofLiteralForWallet(s, '[USDC proofs]');
+
+  // 1) Prefer explicit proofs passed to function.
+  const explicit = encodeUsdcProofPair(proofs);
+  if (explicit) return out(explicit);
+
+  // 2) Try common proof fields from wallet/token record payload.
+  const candidates = [
+    tokenRecord?.proofs,
+    tokenRecord?.merkleProofs,
+    tokenRecord?.merkle_proofs,
+    tokenRecord?.proof,
+    tokenRecord?.data?.proofs,
+    tokenRecord?.data?.merkleProofs,
+    tokenRecord?.data?.merkle_proofs,
+    tokenRecord?.data?.proof,
+  ];
+  for (const c of candidates) {
+    const encoded = encodeUsdcProofPair(c);
+    if (encoded) return out(encoded);
+  }
+
+  // 3) Last-chance parse when record payload itself is JSON string containing proofs.
+  if (typeof tokenRecord === 'string' && tokenRecord.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(tokenRecord);
+      const fromParsed = await getUsdcMerkleProofsInput(parsed, proofs);
+      if (fromParsed) return out(fromParsed);
+    } catch {
+      // ignore and throw below
+    }
+  }
+
+  // 4) NullPay-style fallback: derive proofs from freeze-list tree in browser.
+  try {
+    const generated = await generateNullPayStyleUsdcProofPair();
+    console.log(
+      '[USDC proofs] Wallet record had no proofs; using NullPay-style generated freeze-list proof pair.',
+    );
+    return out(generated);
+  } catch (fallbackErr: any) {
+    console.warn(
+      '[USDC proofs] Dynamic fallback generation failed, using static deposit_proofs.in pair:',
+      fallbackErr?.message || fallbackErr,
+    );
+    return out(DEFAULT_USDC_MERKLE_PROOFS);
+  }
+}
+
+/**
+ * Static Merkle proof pair for USAD deposit/repay fallback.
+ *
+ * We follow the same NullPay-style "empty sibling" proof shape used for USDC,
+ * but with leaf_index=1u32 (empty side of a tree where index 0 is occupied).
+ */
+const DEFAULT_USAD_MERKLE_PROOFS =
+  '[{ siblings: [0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field], leaf_index: 1u32 }, { siblings: [0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field], leaf_index: 1u32 }]';
+
+function encodeUsadProofPair(proofs: any): string | null {
+  const toFieldLiteral = (v: any): string | null => {
+    if (v == null) return null;
+    if (typeof v === 'string') {
+      const t = v.trim().replace(/^["']|["']$/g, '');
+      if (!t) return null;
+      if (t.endsWith('field')) return t;
+      if (/^\d+$/.test(t)) return `${t}field`;
+      return null;
+    }
+    if (typeof v === 'number' || typeof v === 'bigint') {
+      return `${v}field`;
+    }
+    if (typeof v === 'object') {
+      if ('value' in v) return toFieldLiteral((v as any).value);
+      if ('field' in v) return toFieldLiteral((v as any).field);
+    }
+    return null;
+  };
+
+  const toU32Literal = (v: any): string | null => {
+    if (v == null) return null;
+    if (typeof v === 'string') {
+      const t = v.trim().replace(/^["']|["']$/g, '');
+      if (!t) return null;
+      if (t.endsWith('u32')) return t;
+      if (/^\d+$/.test(t)) return `${t}u32`;
+      return null;
+    }
+    if (typeof v === 'number' || typeof v === 'bigint') {
+      return `${v}u32`;
+    }
+    if (typeof v === 'object' && 'value' in v) return toU32Literal((v as any).value);
+    return null;
+  };
+
+  const proofToLeo = (p: any): string | null => {
+    if (p == null) return null;
+    if (typeof p === 'string') {
+      const s = p.trim();
+      // Accept already-serialized Leo proof literals.
+      if (s.startsWith('{') && s.includes('siblings') && s.includes('leaf_index')) return s;
+      // Some wallets might return JSON-stringified objects.
+      if (s.startsWith('{') && s.includes('siblings')) {
+        try {
+          const parsed = JSON.parse(s);
+          return proofToLeo(parsed);
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+    if (typeof p === 'object') {
+      const siblingsRaw = (p as any).siblings ?? (p as any).sibling ?? null;
+      const leafRaw = (p as any).leaf_index ?? (p as any).leafIndex ?? null;
+      if (!Array.isArray(siblingsRaw) || siblingsRaw.length !== 16) return null;
+      const siblings = siblingsRaw.map(toFieldLiteral);
+      if (siblings.some((x) => x == null)) return null;
+      const leaf = toU32Literal(leafRaw);
+      if (!leaf) return null;
+      return `{ siblings: [${(siblings as string[]).join(', ')}], leaf_index: ${leaf} }`;
+    }
+    return null;
+  };
+
+  if (typeof proofs === 'string') {
+    const s = proofs.trim();
+    // If it's already a Leo array literal like: [{...}, {...}]
+    if (s.startsWith('[') && s.includes('siblings') && s.includes('leaf_index')) return s;
+    // Try parsing JSON array/string.
+    try {
+      const parsed = JSON.parse(s);
+      return encodeUsadProofPair(parsed);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!Array.isArray(proofs) || proofs.length < 2) return null;
+  const p0 = proofToLeo(proofs[0]);
+  const p1 = proofToLeo(proofs[1]);
+  if (!p0 || !p1) return null;
+  return `[${p0}, ${p1}]`;
+}
+
+async function getUsadFreezeListIndex0(): Promise<string | null> {
+  try {
+    // NullPay method: use AleoNetworkClient for freeze_list_index mapping.
+    const { AleoNetworkClient } = await import('@provablehq/sdk');
+    const client = new AleoNetworkClient('https://api.provable.com/v1');
+    const mappingValue = await client.getProgramMappingValue(
+      USAD_FREEZELIST_PROGRAM_ID,
+      'freeze_list_index',
+      '0u32',
+    );
+    return mappingValue ? String(mappingValue).replace(/["']/g, '') : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getUsadFreezeListRoot(): Promise<string | null> {
+  try {
+    const response = await fetch(
+      `https://api.provable.com/v2/testnet/program/${USAD_FREEZELIST_PROGRAM_ID}/mapping/freeze_list_root/1u8`,
+    );
+    if (!response.ok) return null;
+    const value = await response.json();
+    return value ? String(value).replace(/["']/g, '') : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getUsadFreezeListCount(): Promise<number> {
+  try {
+    const response = await fetch(
+      `https://api.provable.com/v2/testnet/program/${USAD_FREEZELIST_PROGRAM_ID}/mapping/freeze_list_last_index/true`,
+    );
+    if (!response.ok) return 0;
+    const value = await response.json();
+    const parsed = parseInt(String(value).replace('u32', '').replace(/["']/g, ''), 10);
+    return Number.isFinite(parsed) ? parsed + 1 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function generateNullPayStyleUsadProofPair(): Promise<string> {
+  const [root, count, index0] = await Promise.all([
+    getUsadFreezeListRoot(),
+    getUsadFreezeListCount(),
+    getUsadFreezeListIndex0(),
+  ]);
+
+  let index0Field: string | undefined = undefined;
+  if (index0) {
+    try {
+      const { Address } = await import('@provablehq/wasm');
+      const addr = Address.from_string(index0);
+      const grp = addr.toGroup();
+      index0Field = grp.toXCoordinate().toString();
+    } catch (e: any) {
+      console.warn('[USAD proofs] Failed to convert freeze_list_index[0] address to field:', e?.message || e);
+    }
+  }
+
+  console.log(
+    `[USAD proofs] Freeze-list state -> root: ${root ?? 'null'}, count: ${count}, index[0]: ${index0 ?? 'null'}, index0Field: ${index0Field ?? 'null'}`,
+  );
+
+  const proof = await generateFreezeListProof(1, index0Field);
+  return `[${proof}, ${proof}]`;
+}
+
+/** Default freeze leaf when the on-chain list is empty (Veiled Markets / Sealance convention). */
+const USAD_FREEZE_DEFAULT_ZERO_ADDRESS =
+  'aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc';
+
+/**
+ * Depth for SealanceMerkleTree — must match stablecoin `MerkleProof` sibling count ([field; 16] => depth 16).
+ */
+const USAD_SEALANCE_TREE_DEPTH = 16;
+
+/**
+ * Load all addresses currently in the USAD freeze list (mapping `freeze_list_index`).
+ * Falls back to the canonical zero address when empty (same as Veiled Markets default list).
+ */
+async function fetchUsadFreezeListAddresses(): Promise<string[]> {
+  const count = await getUsadFreezeListCount();
+  if (count <= 0) {
+    return [USAD_FREEZE_DEFAULT_ZERO_ADDRESS];
+  }
+  try {
+    const { AleoNetworkClient } = await import('@provablehq/sdk');
+    const client = new AleoNetworkClient('https://api.provable.com/v1');
+    const addresses: string[] = [];
+    for (let i = 0; i < count; i++) {
+      try {
+        const mappingValue = await client.getProgramMappingValue(
+          USAD_FREEZELIST_PROGRAM_ID,
+          'freeze_list_index',
+          `${i}u32`,
+        );
+        const raw = mappingValue ? String(mappingValue).replace(/["']/g, '').trim() : '';
+        if (raw.startsWith('aleo1')) {
+          addresses.push(raw);
+        }
+      } catch {
+        /* skip missing slot */
+      }
+    }
+    return addresses.length > 0 ? addresses : [USAD_FREEZE_DEFAULT_ZERO_ADDRESS];
+  } catch (e: any) {
+    console.warn('[USAD proofs] fetchUsadFreezeListAddresses failed:', e?.message || e);
+    return [USAD_FREEZE_DEFAULT_ZERO_ADDRESS];
+  }
+}
+
+/**
+ * Veiled Markets–style non-inclusion proofs: @provablehq/sdk `SealanceMerkleTree` over the live freeze list,
+ * bounded to `ownerAddress`. Matches token program verification when the tree layout is Sealance-compatible.
+ */
+async function generateSealanceUsadProofPair(ownerAddress: string): Promise<string> {
+  const { SealanceMerkleTree } = await import('@provablehq/sdk');
+  const sealance = new SealanceMerkleTree();
+  const freezeListAddresses = await fetchUsadFreezeListAddresses();
+  const leaves = sealance.generateLeaves(freezeListAddresses, USAD_SEALANCE_TREE_DEPTH);
+  const tree = sealance.buildTree(leaves);
+  const [leftIdx, rightIdx] = sealance.getLeafIndices(tree, ownerAddress);
+  const leftProof = sealance.getSiblingPath(tree, leftIdx, USAD_SEALANCE_TREE_DEPTH);
+  const rightProof = sealance.getSiblingPath(tree, rightIdx, USAD_SEALANCE_TREE_DEPTH);
+  const formatted = sealance.formatMerkleProof([leftProof, rightProof]);
+  console.log(
+    `[USAD proofs] SealanceMerkleTree pair for ${ownerAddress.slice(0, 12)}… (freeze entries: ${freezeListAddresses.length})`,
+  );
+  return formatted;
+}
+
+/** Parse `owner: aleo1…` from decrypted Token plaintext when caller did not pass wallet address. */
+function extractAleoOwnerFromUsadTokenRecord(tokenRecord: any): string | null {
+  const pt = tokenRecord?.plaintext ?? tokenRecord?.data?.plaintext;
+  if (typeof pt !== 'string') return null;
+  const m = pt.match(/owner\s*:\s*(aleo1[a-z0-9]+)/);
+  return m ? m[1] : null;
+}
+
+async function getUsadMerkleProofsInput(
+  tokenRecord: any,
+  proofs?: [string, string] | string,
+  ownerAddress?: string | null,
+): Promise<string> {
+  const out = (s: string) => normalizeMerkleProofLiteralForWallet(s, '[USAD proofs]');
+
+  // 1) Prefer explicit proofs passed to function.
+  const explicit = encodeUsadProofPair(proofs);
+  if (explicit) return out(explicit);
+
+  // 2) Try common proof fields from wallet/token record payload.
+  const candidates = [
+    tokenRecord?.proofs,
+    tokenRecord?.merkleProofs,
+    tokenRecord?.merkle_proofs,
+    tokenRecord?.proof,
+    tokenRecord?.data?.proofs,
+    tokenRecord?.data?.merkleProofs,
+    tokenRecord?.data?.merkle_proofs,
+    tokenRecord?.data?.proof,
+  ];
+  for (const c of candidates) {
+    const encoded = encodeUsadProofPair(c);
+    if (encoded) return out(encoded);
+  }
+
+  // 3) Last-chance parse when record payload itself is JSON string containing proofs.
+  if (typeof tokenRecord === 'string' && tokenRecord.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(tokenRecord);
+      const fromParsed = await getUsadMerkleProofsInput(parsed, proofs, ownerAddress);
+      if (fromParsed) return out(fromParsed);
+    } catch {
+      // ignore and throw below
+    }
+  }
+
+  // 4) Veiled Markets / Sealance: non-inclusion proofs for this wallet over the live freeze list.
+  const resolvedOwner =
+    (ownerAddress && String(ownerAddress).trim()) || extractAleoOwnerFromUsadTokenRecord(tokenRecord);
+  if (resolvedOwner) {
+    try {
+      const generated = await generateSealanceUsadProofPair(resolvedOwner);
+      console.log('[USAD proofs] Using SealanceMerkleTree (Veiled Markets–style) proof pair.');
+      return out(generated);
+    } catch (sealanceErr: any) {
+      console.warn(
+        '[USAD proofs] SealanceMerkleTree failed, trying NullPay-style fallback:',
+        sealanceErr?.message || sealanceErr,
+      );
+    }
+  } else {
+    console.warn(
+      '[USAD proofs] No wallet address for Sealance proofs; pass owner address or ensure Token plaintext has owner. Trying NullPay-style fallback.',
+    );
+  }
+
+  // 5) NullPay-style fallback: simplified Poseidon tree (browser).
+  try {
+    const generated = await generateNullPayStyleUsadProofPair();
+    console.log('[USAD proofs] Wallet record had no proofs; using NullPay-style generated proof pair.');
+    return out(generated);
+  } catch (fallbackErr: any) {
+    console.warn(
+      '[USAD proofs] Dynamic fallback generation failed, using static deposit_proofs.in pair:',
+      fallbackErr?.message || fallbackErr,
+    );
+    return out(DEFAULT_USAD_MERKLE_PROOFS);
+  }
+}
+
+/**
+ * USAD private record format (from chain/wallet):
+ * { programName, recordName: "Token", recordCiphertext, spent, owner, commitment, tag, ... }
+ *
+ * For USAD, we expect the same Token record shape as USDCx, only bound to a different token program.
+ */
+function isUsadTokenRecord(rec: any): boolean {
+  const programId = (rec?.program_id ?? rec?.programId ?? rec?.programName ?? '').toString();
+  const recordName = (rec?.recordName ?? rec?.record_name ?? rec?.data?.recordName ?? '').toString();
+  const isToken = recordName === 'Token' || (!recordName && (rec?.recordCiphertext ?? rec?.record_ciphertext));
+  return (programId === USAD_TOKEN_PROGRAM || programId.includes('test_usad_stablecoin')) && (isToken || !!rec?.recordCiphertext);
+}
+
+/**
+ * Build the token record value for transition input #0 (deposit/repay).
+ * Prefer plaintext so the wallet can parse it as test_usad_stablecoin.aleo/Token.record.
+ */
+function getUsadTokenInputForTransition(record: any): string | any {
+  if (record?.plaintext && typeof record.plaintext === 'string') {
+    const pt = record.plaintext.trim();
+    if (pt) return pt;
+  }
+  // Fallback to ciphertext-only, using the same generic ciphertext extractor used for USDC.
+  const cipher = getUsdcRecordCipher(record);
+  if (cipher) return cipher;
+  if (record && typeof record === 'object') return record;
+  return '';
+}
 
 /**
  * USDCx private record format (from chain/wallet):
@@ -1103,6 +1669,45 @@ export async function getPrivateUsdcBalance(
       if (val === null && (rec.plaintext || (rec.recordCiphertext ?? rec.record_ciphertext)) && decrypt) {
         try {
           const plain = rec.plaintext || await decrypt(rec.recordCiphertext || rec.record_ciphertext);
+          if (plain) val = parseUsdcAmountFromPlaintext(plain);
+        } catch {
+          // skip
+        }
+      }
+      if (val != null && val > BigInt(0)) totalMicro += val;
+    }
+    return Number(totalMicro) / 1_000_000;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Get total private USAD balance (test_usad_stablecoin.aleo Token records) in human USAD.
+ * Mirrors getPrivateUsdcBalance but queries the USAD token program.
+ */
+export async function getPrivateUsadBalance(
+  requestRecords: (program: string, includeSpent?: boolean) => Promise<any[]>,
+  decrypt?: (cipherText: string) => Promise<string>
+): Promise<number> {
+  try {
+    const records = await requestRecords(USAD_TOKEN_PROGRAM, false);
+    if (!records || !Array.isArray(records)) return 0;
+    let totalMicro = BigInt(0);
+    for (const rec of records as any[]) {
+      if (rec?.spent === true || rec?.data?.spent === true) continue;
+      if (!isUsadTokenRecord(rec)) continue;
+      let val: bigint | null = parseUsdcAmount(
+        rec?.data?.amount ?? rec?.amount ?? (rec?.data && (rec.data as any).amount),
+      );
+      if (
+        val === null &&
+        (rec.plaintext || (rec.recordCiphertext ?? rec.record_ciphertext)) &&
+        decrypt
+      ) {
+        try {
+          const plain =
+            rec.plaintext || (await decrypt(rec.recordCiphertext || rec.record_ciphertext));
           if (plain) val = parseUsdcAmountFromPlaintext(plain);
         } catch {
           // skip
@@ -1301,6 +1906,143 @@ export async function getSuitableUsdcTokenRecord(
   return null;
 }
 
+/**
+ * Fetch a USAD Token record from the wallet with balance >= amount.
+ * Mirrors getSuitableUsdcTokenRecord, but queries `test_usad_stablecoin.aleo` records.
+ *
+ * IMPORTANT: `amount` is in micro units (u64) matching the USAD Token record amount type.
+ */
+export async function getSuitableUsadTokenRecord(
+  requestRecords: (program: string, includeSpent?: boolean) => Promise<any[]>,
+  amount: number,
+  _publicKey: string
+): Promise<any | null> {
+  const amountU128 = BigInt(amount);
+  const logPrefix = '[getSuitableUsadTokenRecord]';
+
+  console.log(
+    `${logPrefix} Requesting records for program: ${USAD_TOKEN_PROGRAM}, amount required: ${amount} (u64, record uses 6 decimals)`,
+  );
+
+  let records: any[];
+  try {
+    records = await requestRecords(USAD_TOKEN_PROGRAM, false);
+  } catch (e: any) {
+    console.error(`${logPrefix} requestRecords threw:`, e?.message ?? e);
+    throw e;
+  }
+
+  console.log(`${logPrefix} requestRecords("${USAD_TOKEN_PROGRAM}", false) returned:`, {
+    isArray: Array.isArray(records),
+    length: records?.length ?? 0,
+    raw: records,
+  });
+
+  if (!records || !Array.isArray(records)) {
+    console.warn(`${logPrefix} No records array (got ${records})`);
+    return null;
+  }
+
+  if (records.length === 0) {
+    console.warn(`${logPrefix} Zero records for "${USAD_TOKEN_PROGRAM}". Trying requestRecords("", false) to see all programs...`);
+    try {
+      const allRecords = await requestRecords('', false);
+      const allArr = Array.isArray(allRecords) ? allRecords : [];
+      const programKey = (r: any) => r?.program_id ?? r?.programId ?? r?.programName ?? '?';
+      console.log(`${logPrefix} requestRecords("") returned ${allArr.length} total records. Program IDs:`, allArr.map(programKey));
+      const usadFromAll = allArr.filter((r: any) => {
+        const id = (r?.program_id ?? r?.programId ?? r?.programName ?? '').toString();
+        return id === USAD_TOKEN_PROGRAM || id.includes('test_usad_stablecoin');
+      });
+      console.log(`${logPrefix} Of those, ${usadFromAll.length} are ${USAD_TOKEN_PROGRAM}`);
+      if (usadFromAll.length > 0) {
+        console.log(`${logPrefix} Use program "${USAD_TOKEN_PROGRAM}" in wallet record permissions / reconnect with that program.`);
+      }
+    } catch (e2: any) {
+      console.warn(`${logPrefix} requestRecords("") failed:`, e2?.message ?? e2);
+    }
+    return null;
+  }
+
+  let latestBlockHeight = 0;
+  try {
+    latestBlockHeight = await getLatestBlockHeight();
+    if (latestBlockHeight > 0) {
+      console.log(`${logPrefix} Latest block height: ${latestBlockHeight}; sorting records by block height (latest first).`);
+    }
+  } catch (e: any) {
+    console.warn(`${logPrefix} Could not fetch latest block height:`, e?.message ?? e);
+  }
+
+  const sortedRecords = [...records].sort((a, b) => {
+    const ha = getUsdcRecordBlockHeight(a) ?? 0;
+    const hb = getUsdcRecordBlockHeight(b) ?? 0;
+    return hb - ha;
+  });
+
+  console.log(`${logPrefix} Inspecting ${sortedRecords.length} record(s)...`);
+
+  const unspentTokenRecords: any[] = [];
+
+  for (let i = 0; i < sortedRecords.length; i++) {
+    const rec = sortedRecords[i];
+    const spent = rec?.spent === true || rec?.data?.spent === true;
+    const isToken = isUsadTokenRecord(rec);
+    const recHeight = getUsdcRecordBlockHeight(rec);
+    console.log(`${logPrefix} Record[${i}]:`, {
+      program_id: rec?.program_id ?? rec?.programId ?? rec?.programName,
+      recordName: rec?.recordName ?? rec?.record_name,
+      block_height: recHeight,
+      spent,
+      isUsadToken: isToken,
+      hasRecordCiphertext: !!(rec?.recordCiphertext ?? rec?.record_ciphertext),
+      amount: rec?.data?.amount ?? rec?.amount,
+    });
+
+    if (spent) {
+      console.log(`${logPrefix} Record[${i}] skipped (spent)`);
+      continue;
+    }
+
+    if (!isToken) {
+      console.log(`${logPrefix} Record[${i}] skipped (not a USAD Token record)`);
+      continue;
+    }
+
+    const amt =
+      rec?.data?.amount ??
+      rec?.amount ??
+      rec?.data?.amount_ ??
+      (rec?.data && typeof rec.data === 'object' && (rec.data as any).amount);
+
+    const val = parseUsdcAmount(amt);
+
+    if (val !== null) {
+      if (val === BigInt(0)) {
+        console.log(`${logPrefix} Record[${i}] skipped (amount is 0; cannot use for deposit/repay)`);
+        continue;
+      }
+      console.log(`${logPrefix} Record[${i}] amount parsed: ${String(val)} (required >= ${amountU128}), sufficient: ${val >= amountU128}`);
+      if (val >= amountU128) {
+        console.log(`${logPrefix} Using record[${i}] for deposit/repay (has sufficient amount)`);
+        return rec;
+      }
+      continue;
+    }
+
+    unspentTokenRecords.push(rec);
+    console.log(`${logPrefix} Record[${i}] has no plaintext amount (encrypted). Added to fallback list.`);
+  }
+
+  if (unspentTokenRecords.length > 0) {
+    console.log(`${logPrefix} No record with plaintext amount >= ${amount}. Using first unspent Token record with encrypted amount; program will assert balance.`);
+    return unspentTokenRecords[0];
+  }
+
+  console.warn(`${logPrefix} No unspent USAD Token record found. Check that you have private USAD (transfer_public_to_private) and record access.`);
+  return null;
+}
+
 function handleUsdcTxError(error: any, action: string): string {
   const rawMsg = String(error?.message || error || '').toLowerCase();
   const isCancelled =
@@ -1322,8 +2064,168 @@ function handleUsdcTxError(error: any, action: string): string {
   throw new Error(`${action} failed: ${error?.message || 'Unknown error'}`);
 }
 
+function handleUsadTxError(error: any, action: string): string {
+  const rawMsg = String(error?.message || error || '').toLowerCase();
+  const isCancelled =
+    rawMsg.includes('operation was cancelled by the user') ||
+    rawMsg.includes('operation was canceled by the user') ||
+    rawMsg.includes('user cancelled') ||
+    rawMsg.includes('user canceled') ||
+    rawMsg.includes('user rejected') ||
+    rawMsg.includes('rejected by user') ||
+    rawMsg.includes('transaction cancelled by user');
+  if (isCancelled) return '__CANCELLED__';
+
+  if (rawMsg.includes('proving failed') || rawMsg.includes('proving error')) {
+    throw new Error(
+      `${action} failed: Proving failed. The USAD token program requires valid Merkle proofs for your record. ` +
+        'Placeholder proofs cannot be used on-chain. Obtain valid proofs from your wallet or from the token issuer.',
+    );
+  }
+  throw new Error(`${action} failed: ${error?.message || 'Unknown error'}`);
+}
+
 /**
- * USDC deposit: lending_pool_usdce_v86.aleo/deposit(token, amount, proofs) — 3 inputs.
+ * USAD deposit: lending_pool_usad_v16.aleo/deposit(token, amount, proofs) — 3 inputs.
+ * Amount in human USAD; converted to micro-USAD for the program.
+ *
+ * @param ownerAddress - Connected wallet `aleo1…` address. Used to build Sealance / Veiled Markets–style
+ *   Merkle non-inclusion proofs when the wallet does not attach proofs to the record.
+ */
+export async function lendingDepositUsad(
+  executeTransaction: ((tx: any) => Promise<any>) | undefined,
+  amount: number,
+  tokenRecord: any,
+  proofs?: [string, string] | string,
+  ownerAddress?: string | null,
+): Promise<string> {
+  if (!executeTransaction) throw new Error('executeTransaction is not available.');
+  if (amount <= 0) throw new Error('Deposit amount must be greater than 0');
+  if (tokenRecord == null) throw new Error('A USAD Token record is required. Please ensure you have USAD in your wallet.');
+  try {
+    const tokenInput = getUsadTokenInputForTransition(tokenRecord);
+    if (tokenInput === '' || (typeof tokenInput === 'string' && !String(tokenInput).trim())) {
+      throw new Error('USAD Token record has no ciphertext or plaintext. Ensure the record is from test_usad_stablecoin.aleo and try again.');
+    }
+    const amountMicro = Math.round(amount * 1_000_000);
+    const amountStr = `${amountMicro}u64`;
+    const proofsEncoded = await getUsadMerkleProofsInput(tokenRecord, proofs, ownerAddress);
+
+    const inputs: (string | any)[] = [tokenInput, amountStr, proofsEncoded];
+
+    const result = await executeTransaction({
+      program: USAD_LENDING_POOL_PROGRAM_ID,
+      function: 'deposit',
+      inputs,
+      fee: DEFAULT_LENDING_FEE * 1_000_000,
+      privateFee: false,
+    });
+    const tempId = result?.transactionId;
+    if (!tempId) throw new Error('Deposit failed: No transactionId returned.');
+    return tempId;
+  } catch (error: any) {
+    return handleUsadTxError(error, 'USAD deposit');
+  }
+}
+
+/**
+ * USAD repay: lending_pool_usad_v16.aleo/repay(token, amount, proofs) — 3 inputs.
+ * Amount in human USAD; converted to micro-USAD for the program.
+ *
+ * @param ownerAddress - Connected wallet address for Sealance / Veiled-style Merkle proofs (see deposit).
+ */
+export async function lendingRepayUsad(
+  executeTransaction: ((tx: any) => Promise<any>) | undefined,
+  amount: number,
+  tokenRecord: any,
+  proofs?: [string, string] | string,
+  ownerAddress?: string | null,
+): Promise<string> {
+  if (!executeTransaction) throw new Error('executeTransaction is not available.');
+  if (amount <= 0) throw new Error('Repay amount must be greater than 0');
+  if (tokenRecord == null) throw new Error('A USAD Token record is required for repay.');
+  try {
+    const tokenInput = getUsadTokenInputForTransition(tokenRecord);
+    if (tokenInput === '' || (typeof tokenInput === 'string' && !String(tokenInput).trim())) {
+      throw new Error('USAD Token record has no ciphertext or plaintext. Ensure the record is from test_usad_stablecoin.aleo and try again.');
+    }
+    const amountMicro = Math.round(amount * 1_000_000);
+    const amountStr = `${amountMicro}u64`;
+    const proofsEncoded = await getUsadMerkleProofsInput(tokenRecord, proofs, ownerAddress);
+
+    const inputs: (string | any)[] = [tokenInput, amountStr, proofsEncoded];
+
+    const result = await executeTransaction({
+      program: USAD_LENDING_POOL_PROGRAM_ID,
+      function: 'repay',
+      inputs,
+      fee: DEFAULT_LENDING_FEE * 1_000_000,
+      privateFee: false,
+    });
+    const tempId = result?.transactionId;
+    if (!tempId) throw new Error('Repay failed: No transactionId returned.');
+    return tempId;
+  } catch (error: any) {
+    return handleUsadTxError(error, 'USAD repay');
+  }
+}
+
+/**
+ * USAD withdraw: state-only; wallet submits withdraw transition, backend later transfers USAD.
+ */
+export async function lendingWithdrawUsad(
+  executeTransaction: ((tx: any) => Promise<any>) | undefined,
+  amount: number,
+): Promise<string> {
+  if (!executeTransaction) throw new Error('executeTransaction is not available.');
+  if (amount <= 0) throw new Error('Withdraw amount must be greater than 0');
+  try {
+    const amountMicro = Math.round(amount * 1_000_000);
+    const inputs = [`${amountMicro}u64`];
+    const result = await executeTransaction({
+      program: USAD_LENDING_POOL_PROGRAM_ID,
+      function: 'withdraw',
+      inputs,
+      fee: DEFAULT_LENDING_FEE * 1_000_000,
+      privateFee: false,
+    });
+    const tempId = result?.transactionId;
+    if (!tempId) throw new Error('Withdraw failed: No transactionId returned.');
+    return tempId;
+  } catch (error: any) {
+    return handleUsadTxError(error, 'USAD withdraw');
+  }
+}
+
+/**
+ * USAD borrow: state-only; wallet submits borrow transition, backend later transfers USAD.
+ */
+export async function lendingBorrowUsad(
+  executeTransaction: ((tx: any) => Promise<any>) | undefined,
+  amount: number,
+): Promise<string> {
+  if (!executeTransaction) throw new Error('executeTransaction is not available.');
+  if (amount <= 0) throw new Error('Borrow amount must be greater than 0');
+  try {
+    const amountMicro = Math.round(amount * 1_000_000);
+    const inputs = [`${amountMicro}u64`];
+    const result = await executeTransaction({
+      program: USAD_LENDING_POOL_PROGRAM_ID,
+      function: 'borrow',
+      inputs,
+      fee: DEFAULT_LENDING_FEE * 1_000_000,
+      privateFee: false,
+    });
+    const tempId = result?.transactionId;
+    if (!tempId) throw new Error('Borrow failed: No transactionId returned.');
+    return tempId;
+  } catch (error: any) {
+    return handleUsadTxError(error, 'USAD borrow');
+  }
+}
+
+/**
+ * USDC deposit: pool program /deposit (e.g. lending_pool_usdcx_v16.aleo) — token, amount, proofs — 3 inputs.
  * Amount in human USDC; converted to micro-USDC for the program.
  */
 export async function lendingDepositUsdc(
@@ -1342,20 +2244,20 @@ export async function lendingDepositUsdc(
     }
     const amountMicro = Math.round(amount * 1_000_000);
     const amountStr = `${amountMicro}u64`;
-    let proofsEncoded: string;
-    if (typeof proofs === 'string' && proofs.trim().startsWith('[') && proofs.includes('siblings')) {
-      proofsEncoded = proofs.trim();
-    } else {
-      const proofsInput = Array.isArray(proofs) && proofs.length >= 2
-        ? [String(proofs[0]).trim(), String(proofs[1]).trim()]
-        : ['', ''];
-      proofsEncoded =
-        proofsInput.every(Boolean) && proofsInput[0] && proofsInput[1]
-          ? (proofsInput[0].startsWith('{') ? `[${proofsInput[0]}, ${proofsInput[1]}]` : proofsInput.join(','))
-          : DEFAULT_USDC_MERKLE_PROOFS;
-    }
+    const proofsEncoded = await getUsdcMerkleProofsInput(tokenRecord, proofs);
 
     const inputs: (string | any)[] = [tokenInput, amountStr, proofsEncoded];
+
+    // Debug: wallet-adapter ABI parser errors depend on exact input formatting.
+    console.log('[USDC deposit] Wallet inputs payload (debug):', {
+      program: USDC_LENDING_POOL_PROGRAM_ID,
+      function: 'deposit',
+      input0_token_type: typeof tokenInput,
+      input0_token_preview: typeof tokenInput === 'string' ? tokenInput.slice(0, 120) : '',
+      input1_amount: amountStr,
+      input2_proofs_type: typeof proofsEncoded,
+      input2_proofs_preview: typeof proofsEncoded === 'string' ? proofsEncoded.slice(0, 200) : '',
+    });
 
     console.log('[USDC deposit] All 3 inputs:', {
       input0_token: tokenInput,
@@ -1379,7 +2281,7 @@ export async function lendingDepositUsdc(
 }
 
 /**
- * USDC repay: lending_pool_usdce_v86.aleo/repay(token, amount, proofs) — 3 inputs.
+ * USDC repay: pool program /repay — 3 inputs.
  * Amount in human USDC; converted to micro-USDC for the program.
  */
 export async function lendingRepayUsdc(
@@ -1398,19 +2300,19 @@ export async function lendingRepayUsdc(
     }
     const amountMicro = Math.round(amount * 1_000_000);
     const amountStr = `${amountMicro}u64`;
-    let proofsEncoded: string;
-    if (typeof proofs === 'string' && proofs.trim().startsWith('[') && proofs.includes('siblings')) {
-      proofsEncoded = proofs.trim();
-    } else {
-      const proofsInput = Array.isArray(proofs) && proofs.length >= 2
-        ? [String(proofs[0]).trim(), String(proofs[1]).trim()]
-        : ['', ''];
-      proofsEncoded =
-        proofsInput.every(Boolean) && proofsInput[0] && proofsInput[1]
-          ? (proofsInput[0].startsWith('{') ? `[${proofsInput[0]}, ${proofsInput[1]}]` : proofsInput.join(','))
-          : DEFAULT_USDC_MERKLE_PROOFS;
-    }
+    const proofsEncoded = await getUsdcMerkleProofsInput(tokenRecord, proofs);
     const inputs: (string | any)[] = [tokenInput, amountStr, proofsEncoded];
+
+    // Debug: wallet-adapter ABI parser errors depend on exact input formatting.
+    console.log('[USDC repay] Wallet inputs payload (debug):', {
+      program: USDC_LENDING_POOL_PROGRAM_ID,
+      function: 'repay',
+      input0_token_type: typeof tokenInput,
+      input0_token_preview: typeof tokenInput === 'string' ? tokenInput.slice(0, 120) : '',
+      input1_amount: amountStr,
+      input2_proofs_type: typeof proofsEncoded,
+      input2_proofs_preview: typeof proofsEncoded === 'string' ? proofsEncoded.slice(0, 200) : '',
+    });
 
     console.log('[USDC repay] All 3 inputs:', {
       input0_token: tokenInput,
@@ -1478,6 +2380,85 @@ export async function lendingBorrowUsdc(
     return tempId;
   } catch (error: any) {
     return handleUsdcTxError(error, 'USDC borrow');
+  }
+}
+
+/**
+ * Admin-only: initialize ALEO lending pool once.
+ */
+export async function lendingInitializeAleoPool(
+  executeTransaction: ((tx: any) => Promise<any>) | undefined,
+): Promise<string> {
+  if (!executeTransaction) throw new Error('executeTransaction is not available.');
+  try {
+    const result = await executeTransaction({
+      program: LENDING_POOL_PROGRAM_ID,
+      function: 'initialize',
+      inputs: [],
+      fee: DEFAULT_LENDING_FEE * 1_000_000,
+      privateFee: false,
+    });
+    const txId = result?.transactionId;
+    if (!txId) throw new Error('Initialize ALEO pool failed: No transactionId returned.');
+    return txId;
+  } catch (error: any) {
+    const rawMsg = String(error?.message || error || '').toLowerCase();
+    const isCancelled =
+      rawMsg.includes('operation was cancelled by the user') ||
+      rawMsg.includes('operation was canceled by the user') ||
+      rawMsg.includes('user cancelled') ||
+      rawMsg.includes('user canceled') ||
+      rawMsg.includes('user rejected') ||
+      rawMsg.includes('rejected by user') ||
+      rawMsg.includes('transaction cancelled by user');
+    if (isCancelled) return '__CANCELLED__';
+    throw new Error(`Initialize ALEO pool failed: ${error?.message || 'Unknown error'}`);
+  }
+}
+
+/**
+ * Admin-only: initialize USDC lending pool once.
+ */
+export async function lendingInitializeUsdcPool(
+  executeTransaction: ((tx: any) => Promise<any>) | undefined,
+): Promise<string> {
+  if (!executeTransaction) throw new Error('executeTransaction is not available.');
+  try {
+    const result = await executeTransaction({
+      program: USDC_LENDING_POOL_PROGRAM_ID,
+      function: 'initialize',
+      inputs: [],
+      fee: DEFAULT_LENDING_FEE * 1_000_000,
+      privateFee: false,
+    });
+    const txId = result?.transactionId;
+    if (!txId) throw new Error('Initialize USDC pool failed: No transactionId returned.');
+    return txId;
+  } catch (error: any) {
+    return handleUsdcTxError(error, 'Initialize USDC pool');
+  }
+}
+
+/**
+ * Admin-only: initialize USAD lending pool once.
+ */
+export async function lendingInitializeUsadPool(
+  executeTransaction: ((tx: any) => Promise<any>) | undefined,
+): Promise<string> {
+  if (!executeTransaction) throw new Error('executeTransaction is not available.');
+  try {
+    const result = await executeTransaction({
+      program: USAD_LENDING_POOL_PROGRAM_ID,
+      function: 'initialize',
+      inputs: [],
+      fee: DEFAULT_LENDING_FEE * 1_000_000,
+      privateFee: false,
+    });
+    const txId = result?.transactionId;
+    if (!txId) throw new Error('Initialize USAD pool failed: No transactionId returned.');
+    return txId;
+  } catch (error: any) {
+    return handleUsadTxError(error, 'Initialize USAD pool');
   }
 }
 
@@ -1583,6 +2564,36 @@ export async function lendingAccrueInterestUsdc(
       rawMsg.includes('user cancelled') || rawMsg.includes('user rejected');
     if (isCancelled) return '__CANCELLED__';
     throw new Error(`USDC accrue interest failed: ${error?.message || 'Unknown error'}`);
+  }
+}
+
+/**
+ * Accrue interest on the USAD pool (lending_pool_usad_v12.aleo). Same signature as Aleo pool.
+ */
+export async function lendingAccrueInterestUsad(
+  executeTransaction: ((tx: any) => Promise<any>) | undefined,
+): Promise<string> {
+  if (!executeTransaction) throw new Error('executeTransaction is not available.');
+  const fee = DEFAULT_LENDING_FEE * 1_000_000;
+  try {
+    const result = await executeTransaction({
+      program: USAD_LENDING_POOL_PROGRAM_ID,
+      function: 'accrue_interest',
+      inputs: [],
+      fee,
+      privateFee: false,
+    });
+    const tempId = result?.transactionId;
+    if (!tempId) throw new Error('USAD accrue interest failed: No transactionId returned.');
+    return tempId;
+  } catch (error: any) {
+    const rawMsg = String(error?.message || error || '').toLowerCase();
+    const isCancelled =
+      rawMsg.includes('operation was cancelled by the user') ||
+      rawMsg.includes('user cancelled') ||
+      rawMsg.includes('user rejected');
+    if (isCancelled) return '__CANCELLED__';
+    throw new Error(`USAD accrue interest failed: ${error?.message || 'Unknown wallet error'}`);
   }
 }
 
@@ -1720,6 +2731,20 @@ export async function getUsdcLendingPoolState(): Promise<{
   return getLendingPoolStateForProgram(USDC_LENDING_POOL_PROGRAM_ID);
 }
 
+/**
+ * Read global pool state for the USAD pool.
+ */
+export async function getUsadLendingPoolState(): Promise<{
+  totalSupplied: string | null;
+  totalBorrowed: string | null;
+  utilizationIndex: string | null;
+  interestIndex: string | null;
+  liquidityIndex: string | null;
+  borrowIndex: string | null;
+}> {
+  return getLendingPoolStateForProgram(USAD_LENDING_POOL_PROGRAM_ID);
+}
+
 // --- v91 interest/APY constants (match program lending_pool_v91.aleo) ---
 // Leo program:
 //   const SCALE:        u64 = 10_000u64;   // basis points denominator
@@ -1771,6 +2796,9 @@ export function computeAleoPoolAPY(
 
 /** Same rate model as Aleo pool (v86); USDC pool uses identical constants. */
 export const computeUsdcPoolAPY = computeAleoPoolAPY;
+
+/** Same rate model as Aleo pool (v86); USAD pool uses identical constants. */
+export const computeUsadPoolAPY = computeAleoPoolAPY;
 
 /**
  * Effective supply balance = (user_scaled_supply * liquidity_index) / INDEX_SCALE.

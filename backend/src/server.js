@@ -1,7 +1,15 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { runWithdrawal, runBorrow, runWithdrawalUsdc, runBorrowUsdc } from './processWithdrawal.js';
+import fetch from 'node-fetch';
+import {
+  runWithdrawal,
+  runBorrow,
+  runWithdrawalUsdc,
+  runBorrowUsdc,
+  runWithdrawalUsad,
+  runBorrowUsad,
+} from './processWithdrawal.js';
 import { logTestnetStatus } from './checkTestnet.js';
 import { updateVaultTx, setVaultStatus, insertTransactionRecord } from './supabase.js';
 import { startVaultWatcher } from './vaultWatcher.js';
@@ -50,6 +58,128 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 app.use(express.json());
+
+let proofWasm = null;
+async function getProofWasm() {
+  if (proofWasm) return proofWasm;
+  const wasm = await import('@provablehq/wasm');
+  const Poseidon4 = wasm?.Poseidon4;
+  const Field = wasm?.Field;
+  const Address = wasm?.Address;
+  if (!Poseidon4 || !Field) {
+    throw new Error('Poseidon4/Field missing in @provablehq/wasm');
+  }
+  proofWasm = { Poseidon4, Field, Address };
+  return proofWasm;
+}
+
+const USDC_FREEZELIST_PROGRAM_ID =
+  process.env.NEXT_PUBLIC_USDCX_FREEZELIST_PROGRAM_ID || process.env.USDCX_FREEZELIST_PROGRAM_ID || 'test_usdcx_freezelist.aleo';
+
+async function getFreezeMapping(mapping, key) {
+  const candidates = [
+    // NullPay/frontend-compatible endpoint for mapping reads.
+    `https://api.provable.com/v2/testnet/program/${USDC_FREEZELIST_PROGRAM_ID}/mapping/${mapping}/${key}`,
+    // Fallback to configured RPC-style URL if available.
+    `${(process.env.ALEO_RPC_URL || 'https://api.explorer.provable.com/v1').replace(/\/$/, '')}/program/${USDC_FREEZELIST_PROGRAM_ID}/mapping/${mapping}/${key}`,
+  ];
+
+  let lastStatus = 0;
+  for (const url of candidates) {
+    const res = await fetch(url);
+    if (res.ok) {
+      const val = await res.json();
+      return val ? String(val).replace(/["']/g, '') : null;
+    }
+    lastStatus = res.status;
+  }
+
+  throw new Error(`Mapping fetch failed (${mapping}/${key}) HTTP ${lastStatus}`);
+}
+
+async function buildUsdcProofPair() {
+  const [root, lastIndexRaw, index0] = await Promise.all([
+    getFreezeMapping('freeze_list_root', '1u8'),
+    getFreezeMapping('freeze_list_last_index', 'true'),
+    getFreezeMapping('freeze_list_index', '0u32'),
+  ]);
+
+  const count = Number.parseInt(String(lastIndexRaw || '0').replace('u32', ''), 10);
+  const freezeCount = Number.isFinite(count) ? count + 1 : 0;
+
+  const { Poseidon4, Field, Address } = await getProofWasm();
+  const hasher = new Poseidon4();
+  const zeroField = Field.fromString('0field');
+  const normalizeField = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim().replace(/["']/g, '');
+    return s.endsWith('field') ? s : `${s}field`;
+  };
+  const hashPair = (leftField, rightField) => {
+    try {
+      return hasher.hash([leftField, rightField]).toString();
+    } catch {
+      // Some wasm builds expect Poseidon4 arity exactly 4.
+      return hasher.hash([leftField, rightField, zeroField, zeroField]).toString();
+    }
+  };
+
+  const emptyHashes = [];
+  let currentEmpty = '0field';
+  for (let i = 0; i < 16; i++) {
+    emptyHashes.push(currentEmpty);
+    const f = Field.fromString(currentEmpty);
+    currentEmpty = hashPair(f, f);
+  }
+
+  let occupiedField = index0 || undefined;
+  if (occupiedField && Address && occupiedField.startsWith('aleo1')) {
+    try {
+      const addr = Address.from_string(occupiedField);
+      const grp = addr.toGroup();
+      occupiedField = grp.toXCoordinate().toString();
+    } catch {
+      // Keep original if conversion fails.
+    }
+  }
+  occupiedField = normalizeField(occupiedField) || undefined;
+
+  const targetIndex = 1;
+  let currentHash = '0field';
+  let currentIndex = targetIndex;
+  const siblings = [];
+  for (let level = 0; level < 16; level++) {
+    const isLeft = currentIndex % 2 === 0;
+    const siblingIndex = isLeft ? currentIndex + 1 : currentIndex - 1;
+
+    let siblingHash = emptyHashes[level];
+    if (level === 0 && siblingIndex === 0 && occupiedField) {
+      siblingHash = occupiedField;
+    }
+    siblings.push(siblingHash);
+
+    const fCurrent = Field.fromString(normalizeField(currentHash));
+    const fSibling = Field.fromString(normalizeField(siblingHash));
+    currentHash = isLeft ? hashPair(fCurrent, fSibling) : hashPair(fSibling, fCurrent);
+    currentIndex = Math.floor(currentIndex / 2);
+  }
+
+  const proof = `{ siblings: [${siblings.join(', ')}], leaf_index: ${targetIndex}u32 }`;
+  return {
+    proofs: `[${proof}, ${proof}]`,
+    freezeList: { root, count: freezeCount, index0 },
+  };
+}
+
+app.get('/usdc-proofs', async (_req, res) => {
+  try {
+    const result = await buildUsdcProofPair();
+    return res.json({ ok: true, source: 'backend-nullpay', ...result });
+  } catch (err) {
+    console.error('❌ /usdc-proofs failed:', err);
+    return res.status(500).json({ ok: false, error: err?.message || 'Failed to generate USDC proofs' });
+  }
+});
 
 app.post('/withdraw', async (req, res) => {
   try {
@@ -156,6 +286,39 @@ app.post('/withdraw-usdc', async (req, res) => {
   }
 });
 
+app.post('/withdraw-usad', async (req, res) => {
+  try {
+    const { userAddress, amountUsad, finalTxId } = req.body || {};
+    if (!userAddress || typeof userAddress !== 'string') {
+      return res.status(400).json({ error: 'Missing or invalid userAddress' });
+    }
+    const amount = Number(amountUsad);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Missing or invalid amountUsad (u64 human, e.g. 1 = 1 USAD)' });
+    }
+    if (!finalTxId || typeof finalTxId !== 'string') {
+      return res.status(400).json({ error: 'Missing or invalid finalTxId' });
+    }
+
+    console.log('📥 Queuing USAD withdrawal from frontend:', { userAddress, amountUsad: amount, finalTxId });
+    const { rowsUpdated } = await setVaultStatus(userAddress, finalTxId, 'withdraw', 'vault_processing');
+    if (rowsUpdated > 0) {
+      runVaultTask(() => runWithdrawalUsad(userAddress, amount))
+        .then((transactionId) => updateVaultTx(userAddress, finalTxId, 'withdraw', transactionId))
+        .catch((err) => {
+          console.error('❌ Vault withdraw-usad task failed:', err);
+          setVaultStatus(userAddress, finalTxId, 'withdraw', 'vault_pending');
+        });
+    }
+
+    return res.json({ ok: true, queued: true });
+  } catch (err) {
+    console.error('❌ /withdraw-usad handler failed:', err);
+    const message = err?.message || 'Internal server error';
+    return res.status(500).json({ error: message });
+  }
+});
+
 app.post('/borrow-usdc', async (req, res) => {
   try {
     const { userAddress, amountUsdc, finalTxId } = req.body || {};
@@ -191,6 +354,39 @@ app.post('/borrow-usdc', async (req, res) => {
   }
 });
 
+app.post('/borrow-usad', async (req, res) => {
+  try {
+    const { userAddress, amountUsad, finalTxId } = req.body || {};
+    if (!userAddress || typeof userAddress !== 'string') {
+      return res.status(400).json({ error: 'Missing or invalid userAddress' });
+    }
+    const amount = Number(amountUsad);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Missing or invalid amountUsad (u64 human, e.g. 1 = 1 USAD)' });
+    }
+    if (!finalTxId || typeof finalTxId !== 'string') {
+      return res.status(400).json({ error: 'Missing or invalid finalTxId' });
+    }
+
+    console.log('📥 Queuing USAD borrow from frontend:', { userAddress, amountUsad: amount, finalTxId });
+    const { rowsUpdated } = await setVaultStatus(userAddress, finalTxId, 'borrow', 'vault_processing');
+    if (rowsUpdated > 0) {
+      runVaultTask(() => runBorrowUsad(userAddress, amount))
+        .then((transactionId) => updateVaultTx(userAddress, finalTxId, 'borrow', transactionId))
+        .catch((err) => {
+          console.error('❌ Vault borrow-usad task failed:', err);
+          setVaultStatus(userAddress, finalTxId, 'borrow', 'vault_pending');
+        });
+    }
+
+    return res.json({ ok: true, queued: true });
+  } catch (err) {
+    console.error('❌ /borrow-usad handler failed:', err);
+    const message = err?.message || 'Internal server error';
+    return res.status(500).json({ error: message });
+  }
+});
+
 // Secure transaction record insert: only callers with RECORD_TRANSACTION_SECRET can add rows (e.g. your Next.js server). Prevents anyone from posting fake withdraw/borrow rows.
 function normalizeSecret(s) {
   if (s == null || typeof s !== 'string') return '';
@@ -220,9 +416,9 @@ app.post('/record-transaction', async (req, res) => {
     if (!validTypes.includes(type)) {
       return res.status(400).json({ error: 'Invalid type. Must be one of: deposit, withdraw, borrow, repay' });
     }
-    const validAssets = ['aleo', 'usdcx'];
+    const validAssets = ['aleo', 'usdcx', 'usadx'];
     if (!validAssets.includes(asset)) {
-      return res.status(400).json({ error: 'Invalid asset. Must be aleo or usdcx' });
+      return res.status(400).json({ error: 'Invalid asset. Must be aleo, usdcx, or usadx' });
     }
     const amountNum = Number(amount);
     if (!Number.isFinite(amountNum) || amountNum < 0) {

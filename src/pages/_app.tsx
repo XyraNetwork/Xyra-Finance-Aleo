@@ -20,7 +20,17 @@ import '@provablehq/aleo-wallet-adaptor-react-ui/dist/styles.css';
 
 import '@/assets/css/globals.css';
 
-import { CURRENT_NETWORK, CURRENT_RPC_URL, BOUNTY_PROGRAM_ID, USDC_POOL_PROGRAM_ID, USDC_TOKEN_PROGRAM_ID } from '@/types';
+import {
+  CURRENT_NETWORK,
+  CURRENT_RPC_URL,
+  BOUNTY_PROGRAM_ID,
+  USDC_POOL_PROGRAM_ID,
+  USDC_TOKEN_PROGRAM_ID,
+  USDC_TRANSFER_PROGRAM_ID,
+  USDCX_STACK_PROGRAM_IDS,
+  USAD_POOL_PROGRAM_ID,
+  USAD_TOKEN_PROGRAM_ID,
+} from '@/types';
 import { WalletPersistence } from '@/components/WalletPersistence';
 
 // Initialize the wallet adapters outside the component
@@ -51,7 +61,15 @@ function CustomApp({ Component, pageProps }: AppPropsWithLayout) {
             // decrypt records (e.g. for UserActivity) after the first approval.
             decryptPermission={DecryptPermission.AutoDecrypt}
             // Programs this dApp will interact with via executeTransaction/requestRecords
-            programs={[BOUNTY_PROGRAM_ID, USDC_POOL_PROGRAM_ID, USDC_TOKEN_PROGRAM_ID, 'credits.aleo']}
+            programs={[
+              BOUNTY_PROGRAM_ID,
+              USDC_POOL_PROGRAM_ID,
+              USDC_TRANSFER_PROGRAM_ID,
+              ...USDCX_STACK_PROGRAM_IDS,
+              USAD_POOL_PROGRAM_ID,
+              USAD_TOKEN_PROGRAM_ID,
+              'credits.aleo',
+            ]}
             onError={(error) => console.error(error.message)}
           >
             <WalletPersistence>

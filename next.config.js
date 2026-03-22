@@ -13,6 +13,18 @@ require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 require('dotenv').config({ path: path.resolve(__dirname, '.env.local') });
 
 const nextConfig = {
+  transpilePackages: ['@provablehq/wasm', '@aleohq/wasm'],
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+          { key: 'Cross-Origin-Embedder-Policy', value: 'require-corp' },
+        ],
+      },
+    ];
+  },
   env: {
     URL: process.env.URL,
     RECORD_TRANSACTION_SECRET:process.env.RECORD_TRANSACTION_SECRET,
@@ -31,6 +43,12 @@ const nextConfig = {
   }),
   webpack5: true,
   webpack: (config, options) => {
+    // @provablehq/wasm emits top-level-await/async in browser bundles.
+    // Use a modern client target so webpack doesn't warn about async/await support.
+    if (!options.isServer) {
+      config.target = ['web', 'es2020'];
+    }
+
     config.ignoreWarnings = [/Failed to parse source map/];
     const fallback = config.resolve.fallback || {};
     Object.assign(fallback, {
@@ -66,6 +84,12 @@ const nextConfig = {
       include: /node_modules[\\/]@provablehq[\\/]/,
       type: 'javascript/auto',
       loader: 'file-loader',
+      options: {
+        esModule: false,
+        name: 'static/wasm/[name].[contenthash].[ext]',
+        publicPath: '/_next/',
+        outputPath: '',
+      },
     });
     
     // Handle WASM files from @aleohq/wasm (if needed in future)
@@ -74,6 +98,12 @@ const nextConfig = {
       include: /node_modules[\\/]@aleohq[\\/]wasm/,
       type: 'javascript/auto',
       loader: 'file-loader',
+      options: {
+        esModule: false,
+        name: 'static/wasm/[name].[contenthash].[ext]',
+        publicPath: '/_next/',
+        outputPath: '',
+      },
     });
     
     // Ignore 'wbg' module resolution errors (common with WASM libraries)
