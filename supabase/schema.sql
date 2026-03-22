@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS transaction_history (
   wallet_address TEXT NOT NULL,
   tx_id TEXT NOT NULL,
   type TEXT NOT NULL CHECK (type IN ('deposit', 'withdraw', 'borrow', 'repay')),
-  asset TEXT NOT NULL CHECK (asset IN ('aleo', 'usdcx')),
+  asset TEXT NOT NULL CHECK (asset IN ('aleo', 'usdcx', 'usad')),
   amount NUMERIC(20, 6) NOT NULL,
   program_id TEXT,
   explorer_url TEXT,
@@ -25,10 +25,10 @@ ALTER TABLE transaction_history ADD COLUMN IF NOT EXISTS vault_explorer_url TEXT
 ALTER TABLE transaction_history ADD COLUMN IF NOT EXISTS status TEXT;
 COMMENT ON COLUMN transaction_history.status IS 'Optional: vault_pending (withdraw/borrow queued), completed (vault done). UI infers from vault_tx_id when null.';
 
--- If you already had asset CHECK (asset IN ('aleo', 'usdc')), run this to allow only usdcx:
--- ALTER TABLE transaction_history DROP CONSTRAINT IF EXISTS transaction_history_asset_check;
--- ALTER TABLE transaction_history ADD CONSTRAINT transaction_history_asset_check CHECK (asset IN ('aleo', 'usdcx'));
--- Optional: migrate old rows: UPDATE transaction_history SET asset = 'usdcx' WHERE asset = 'usdc';
+-- If you already had a narrower asset CHECK, run migrations in supabase/migrations/ (e.g. add_usad_asset.sql).
+-- Legacy: migrate old usdc → usdcx, usadx → usad if needed:
+-- UPDATE transaction_history SET asset = 'usdcx' WHERE asset = 'usdc';
+-- UPDATE transaction_history SET asset = 'usad' WHERE asset = 'usadx';
 
 -- Index: fetch transactions by user wallet (used by GET /api/transactions?wallet=...)
 CREATE INDEX IF NOT EXISTS idx_transaction_history_wallet_address

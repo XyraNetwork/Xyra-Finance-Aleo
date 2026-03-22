@@ -59,7 +59,7 @@ async function runWatchCycle() {
 
     const assetLower = (asset || '').toLowerCase();
     const isUsdc = assetLower === 'usdcx';
-    const isUsad = assetLower === 'usadx';
+    const isUsad = assetLower === 'usad' || assetLower === 'usadx';
     const run =
       type === 'withdraw'
         ? isUsad

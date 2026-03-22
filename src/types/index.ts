@@ -45,7 +45,7 @@ export const BOUNTY_PROGRAM_ID =
 // USDC pool program ID.
 // Read from NEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID so we can switch pools via env.
 export const USDC_POOL_PROGRAM_ID =
-  process.env.NEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID || 'lending_pool_usdcx_v16.aleo';
+  process.env.NEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID || 'lending_pool_usdcx_v18.aleo';
 
 // USDCx token program (Provable testnet): required for Token records used in USDC pool deposit/repay/withdraw/borrow.
 export const USDC_TOKEN_PROGRAM_ID = 'test_usdcx_stablecoin.aleo';
@@ -53,7 +53,7 @@ export const USDC_TOKEN_PROGRAM_ID = 'test_usdcx_stablecoin.aleo';
 // Optional: test_transfer_usdcx_v3/v4 demo (deposit_private / deposit). Must be listed on AleoWalletProvider
 // together with merkle_tree + multisig + freezelist or the wallet can mis-parse MerkleProof inputs.
 export const USDC_TRANSFER_PROGRAM_ID =
-  (process.env.NEXT_PUBLIC_USDC_TRANSFER_PROGRAM_ID || 'lending_pool_usdcx_v16.aleo').trim();
+  (process.env.NEXT_PUBLIC_USDC_TRANSFER_PROGRAM_ID || 'lending_pool_usdcx_v18.aleo').trim();
 
 /** Stablecoin stack imports — register with wallet so transitions resolve correctly. */
 export const USDCX_STACK_PROGRAM_IDS = [
@@ -66,7 +66,7 @@ export const USDCX_STACK_PROGRAM_IDS = [
 // USAD pool program ID.
 // Read from NEXT_PUBLIC_USAD_LENDING_POOL_PROGRAM_ID so we can deploy/switch USAD pools via env.
 export const USAD_POOL_PROGRAM_ID =
-  process.env.NEXT_PUBLIC_USAD_LENDING_POOL_PROGRAM_ID || 'lending_pool_usad_v16.aleo';
+  process.env.NEXT_PUBLIC_USAD_LENDING_POOL_PROGRAM_ID || 'lending_pool_usad_v17.aleo';
 
 // USAD token program (Provable testnet): required for Token records used in USAD pool deposit/repay.
 export const USAD_TOKEN_PROGRAM_ID = 'test_usad_stablecoin.aleo';

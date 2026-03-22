@@ -47,6 +47,8 @@ import {
   getUsadLendingPoolState,
   createTestCredits,
   depositTestReal,
+  logAleoTxExplorer,
+  ALEO_TESTNET_TX_EXPLORER,
 } from '@/components/aleo/rpc';
 import { frontendLogger } from '@/utils/logger';
 import { CURRENT_NETWORK } from '@/types';
@@ -55,6 +57,29 @@ import { getSupabaseBrowserClient } from '@/utils/supabase/client';
 // Frontend app environment: 'dev' or 'prod' (default to dev for non-production NODE_ENV)
 const APP_ENV = process.env.NEXT_PUBLIC_APP_ENV;
 const isDevAppEnv = APP_ENV ? APP_ENV === 'dev' : process.env.NODE_ENV !== 'production';
+
+/** Rich console output when a pool tx is rejected / failed / dropped (helps debug repay). */
+function logPoolTxRejected(
+  poolLabel: string,
+  status: string,
+  txId: string,
+  meta?: { action?: string; program?: string }
+) {
+  logAleoTxExplorer(`${poolLabel} tx ${status}`, txId);
+  console.error(`[${poolLabel}] Transaction ${status}`, {
+    txId,
+    explorerUrl: `${ALEO_TESTNET_TX_EXPLORER}/${txId}`,
+    action: meta?.action,
+    program: meta?.program,
+    hints:
+      status.toLowerCase() === 'rejected'
+        ? [
+            'Validator rejected: common for repay if amount > on-chain accrued debt (interest), invalid Merkle proofs, or env program id ≠ deployed pool.',
+            'Try a slightly smaller repay; run accrue interest if your pool supports it; verify wallet registered the same programs.',
+          ]
+        : undefined,
+  });
+}
 
 const DashboardPage: NextPageWithLayout = () => {
   const router = useRouter();
@@ -388,7 +413,7 @@ const DashboardPage: NextPageWithLayout = () => {
     }
   }, [connected, requestRecords, publicKey, decrypt, isFetchingRecords]);
 
-  // Fetch user position for USAD pool (lending_pool_usad_v12.aleo) — same UserActivity record shape.
+  // Fetch user position for USAD pool (lending_pool_usad_v17.aleo) — same UserActivity record shape.
   const fetchRecordsInBackgroundUsad = useCallback(async () => {
     if (!connected || !requestRecords || !publicKey) return;
     if (isFetchingRecords) return;
@@ -681,7 +706,7 @@ const DashboardPage: NextPageWithLayout = () => {
           wallet_address: walletAddress,
           tx_id: txId,
           type,
-          asset: asset === 'usdc' ? 'usdcx' : asset === 'usad' ? 'usadx' : asset,
+          asset: asset === 'usdc' ? 'usdcx' : asset,
           amount,
           program_id: programId ?? null,
         }),
@@ -1159,6 +1184,10 @@ const DashboardPage: NextPageWithLayout = () => {
             }
             if (statusLower === 'rejected' || statusLower === 'failed' || statusLower === 'dropped') {
               txFailed = true;
+              logPoolTxRejected('ALEO pool', statusLower, tx, {
+                action,
+                program: LENDING_POOL_PROGRAM_ID,
+              });
               setStatusMessage(`Transaction ${statusLower}. Vault transfer was not requested.`);
               setLoading(false);
               console.log('========================================\n');
@@ -1366,6 +1395,16 @@ const DashboardPage: NextPageWithLayout = () => {
           break;
         }
         case 'repay': {
+          console.log('[Dashboard][USDC repay] pre-submit context', {
+            amountUsdc,
+            amountMicro,
+            netBorrowedMicro,
+            effectiveUserBorrowedUsdc: effectiveUserBorrowedUsdc ?? null,
+            userBorrowedUsdc,
+            poolProgramResolved: USDC_LENDING_POOL_PROGRAM_ID,
+            envNEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID:
+              process.env.NEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID ?? '(unset)',
+          });
           let tokenRecord = await getSuitableUsdcTokenRecord(requestRecords, amountMicro, publicKey, decrypt);
           if (!tokenRecord) {
             console.warn('[USDC Repay] No suitable USDCx record. See [getSuitableUsdcTokenRecord] logs above for details.');
@@ -1428,6 +1467,10 @@ const DashboardPage: NextPageWithLayout = () => {
             }
             if (statusLower === 'rejected' || statusLower === 'failed' || statusLower === 'dropped') {
               txFailed = true;
+              logPoolTxRejected('USDC pool', statusLower, tx, {
+                action,
+                program: USDC_LENDING_POOL_PROGRAM_ID,
+              });
               setStatusMessage(`Transaction ${statusLower}. Vault transfer was not requested.`);
               setLoading(false);
               return;
@@ -1525,21 +1568,21 @@ const DashboardPage: NextPageWithLayout = () => {
         : Math.min(netSuppliedHuman, maxWithdrawUsadByLtv);
 
       if (action === 'withdraw' && amountUsad > maxWithdrawHuman) {
-        const msg = `You can withdraw at most ${maxWithdrawHuman.toFixed(4)} USADx. Capped by supply, pool liquidity, and 75% LTV (same as ALEO pool).`;
+        const msg = `You can withdraw at most ${maxWithdrawHuman.toFixed(4)} USAD. Capped by supply, pool liquidity, and 75% LTV (same as ALEO pool).`;
         setAmountErrorUsad(msg);
         setStatusMessage(msg);
         setLoading(false);
         return;
       }
       if (action === 'repay' && amountUsad > maxRepayHuman) {
-        const msg = `Repay at most ${maxRepayHuman.toFixed(4)} USADx. On-chain debt may differ slightly — reduce amount if the tx rejects.`;
+        const msg = `Repay at most ${maxRepayHuman.toFixed(4)} USAD. On-chain debt may differ slightly — reduce amount if the tx rejects.`;
         setAmountErrorUsad(msg);
         setStatusMessage(msg);
         setLoading(false);
         return;
       }
       if (action === 'borrow' && poolStateLoadedUsad && amountUsad > maxBorrowUsad) {
-        const msg = `Borrow exceeds your available borrow (${maxBorrowUsad.toFixed(4)} USADx). Capped by 75% LTV and pool liquidity.`;
+        const msg = `Borrow exceeds your available borrow (${maxBorrowUsad.toFixed(4)} USAD). Capped by 75% LTV and pool liquidity.`;
         setAmountErrorUsad(msg);
         setStatusMessage(msg);
         setLoading(false);
@@ -1571,7 +1614,7 @@ const DashboardPage: NextPageWithLayout = () => {
             setAmountErrorUsad(
               'No single USAD record covers this amount (one private Token record must hold the full deposit). Consolidate balance or reduce the amount. See console (F12).',
             );
-            setStatusMessage('No USADx record with sufficient balance.');
+            setStatusMessage('No USAD record with sufficient balance.');
             setLoading(false);
             return;
           }
@@ -1591,6 +1634,16 @@ const DashboardPage: NextPageWithLayout = () => {
         }
 
         case 'repay': {
+          console.log('[Dashboard][USAD repay] pre-submit context', {
+            amountUsad,
+            amountMicro,
+            netBorrowedMicro,
+            effectiveUserBorrowedUsad: effectiveUserBorrowedUsad ?? null,
+            userBorrowedUsad,
+            poolProgramResolved: USAD_LENDING_POOL_PROGRAM_ID,
+            envNEXT_PUBLIC_USAD_LENDING_POOL_PROGRAM_ID:
+              process.env.NEXT_PUBLIC_USAD_LENDING_POOL_PROGRAM_ID ?? '(unset)',
+          });
           let tokenRecord = await getSuitableUsadTokenRecord(requestRecords, amountMicro, publicKey, decrypt);
           if (!tokenRecord) {
             setAmountErrorUsad(
@@ -1660,6 +1713,10 @@ const DashboardPage: NextPageWithLayout = () => {
             }
             if (statusLower === 'rejected' || statusLower === 'failed' || statusLower === 'dropped') {
               txFailed = true;
+              logPoolTxRejected('USAD pool', statusLower, tx, {
+                action,
+                program: USAD_LENDING_POOL_PROGRAM_ID,
+              });
               setStatusMessage(`Transaction ${statusLower}. Vault transfer was not requested.`);
               setLoading(false);
               return;
@@ -2145,18 +2202,18 @@ const DashboardPage: NextPageWithLayout = () => {
   const actionModalTitle =
     actionModalMode === 'withdraw'
       ? `Withdraw ${
-          actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USADx'
+          actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'
         }`
       : actionModalMode === 'deposit'
         ? `Deposit ${
-            actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USADx'
+            actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'
           }`
         : actionModalMode === 'borrow'
           ? `Borrow ${
-              actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USADx'
+              actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'
             }`
           : `Repay ${
-              actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USADx'
+              actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'
             }`;
 
   const supplyBalanceModal =
@@ -2257,7 +2314,7 @@ const DashboardPage: NextPageWithLayout = () => {
                           ? 'ALEO'
                           : actionModalAsset === 'usdc'
                             ? 'USDCx'
-                            : 'USADx'}
+                            : 'USAD'}
                       </span>
                     </div>
                     <div className="flex items-center justify-between mt-1 text-sm text-base-content/70">
@@ -2328,7 +2385,7 @@ const DashboardPage: NextPageWithLayout = () => {
                           ? 'ALEO'
                           : actionModalAsset === 'usdc'
                             ? 'USDCx'
-                            : 'USADx'}
+                            : 'USAD'}
                       </span>
                     </div>
                   </div>
@@ -2587,7 +2644,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USADx</span></td>
+                        <td><span className="font-medium">USAD</span></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -2695,7 +2752,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USADx</span></td>
+                        <td><span className="font-medium">USAD</span></td>
                         <td className="text-base-content/90">
                           {isRefreshingUsadState ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -2794,7 +2851,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USADx</span></td>
+                        <td><span className="font-medium">USAD</span></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -2896,7 +2953,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USADx</span></td>
+                        <td><span className="font-medium">USAD</span></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -2981,8 +3038,8 @@ const DashboardPage: NextPageWithLayout = () => {
                           <td>
                             {row.asset === 'usdcx'
                               ? 'USDCx'
-                              : row.asset === 'usadx'
-                                ? 'USADx'
+                              : row.asset === 'usad' || row.asset === 'usadx'
+                                ? 'USAD'
                                 : row.asset === 'aleo'
                                   ? 'ALEO'
                                   : String(row.asset).toUpperCase()}

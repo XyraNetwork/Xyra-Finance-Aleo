@@ -244,7 +244,11 @@ const DocsPage: NextPageWithLayout = () => {
             <li><span className="font-mono">wallet_address</span> – Aleo address (used for queries).</li>
             <li><span className="font-mono">tx_id</span> – main lending pool tx hash.</li>
             <li><span className="font-mono">type</span> – one of <span className="font-mono">'deposit' | 'withdraw' | 'borrow' | 'repay'</span>.</li>
-            <li><span className="font-mono">asset</span> – <span className="font-mono">'aleo'</span> or <span className="font-mono">'usdcx'</span>.</li>
+            <li>
+              <span className="font-mono">asset</span> –{' '}
+              <span className="font-mono">'aleo'</span>, <span className="font-mono">'usdcx'</span>, or{' '}
+              <span className="font-mono">'usad'</span>.
+            </li>
             <li><span className="font-mono">amount</span> – numeric amount (up to 6 decimals).</li>
             <li><span className="font-mono">explorer_url</span> – Provable explorer URL for the main tx.</li>
             <li><span className="font-mono">vault_tx_id</span> – (optional) vault/backend tx id for withdraw/borrow.</li>
