@@ -106,6 +106,19 @@ const USDC_DECIMALS = 6;
 const USDC_SCALE = 10 ** USDC_DECIMALS; // 1_000_000 — convert u64 (human) to 6-decimal amount for transfer
 const USDC_WITHDRAW_FEE_CREDITS = Number(process.env.USDC_WITHDRAW_FEE_CREDITS || process.env.WITHDRAW_FEE_CREDITS || '0.2');
 const USDC_BORROW_FEE_CREDITS = Number(process.env.USDC_BORROW_FEE_CREDITS || process.env.BORROW_FEE_CREDITS || '0.2');
+const USAD_WITHDRAW_FEE_CREDITS = Number(
+  process.env.USAD_WITHDRAW_FEE_CREDITS ||
+    process.env.USDC_WITHDRAW_FEE_CREDITS ||
+    process.env.WITHDRAW_FEE_CREDITS ||
+    '0.2'
+);
+const USAD_BORROW_FEE_CREDITS = Number(
+  process.env.USAD_BORROW_FEE_CREDITS ||
+    process.env.USDC_BORROW_FEE_CREDITS ||
+    process.env.BORROW_FEE_CREDITS ||
+    process.env.WITHDRAW_FEE_CREDITS ||
+    '0.2'
+);
 const DEFAULT_USDC_MERKLE_PROOFS =
   '[{ siblings: [0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field], leaf_index: 1u32 }, { siblings: [0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field, 0field], leaf_index: 1u32 }]';
 
@@ -118,6 +131,12 @@ const USDC_START_BLOCK = process.env.USDC_START_BLOCK ? Number(process.env.USDC_
 const USDC_END_BLOCK = process.env.USDC_END_BLOCK ? Number(process.env.USDC_END_BLOCK) : null;
 // Persisted state: where to start next time (stored after a successful search/transfer)
 const USDC_STATE_PATH = new URL('./usdc_record_state.json', import.meta.url).pathname;
+
+// --- USAD pool: vault transfers (withdraw & borrow) ---
+// For withdraw/borrow we use transfer_public_to_private, so no Token record lookup/proofs are required.
+const USAD_TOKEN_PROGRAM = 'test_usad_stablecoin.aleo';
+const USAD_DECIMALS = 6;
+const USAD_SCALE = 10 ** USAD_DECIMALS; // 1_000_000
 
 /**
  * Find vault's unspent USDC record using the same method as Aleo credits:
@@ -328,6 +347,106 @@ export async function runBorrowUsdc(toAddress, amountUsdcU64) {
   });
 
   console.log('✅ USDC borrow (vault transfer) transaction submitted:', txId);
+  return txId;
+}
+
+/**
+ * USAD withdraw: vault sends USAD via transfer_public_to_private.
+ * Amount from request is u64 human USAD; convert to 6-decimal base units for transfer (1 -> 1_000_000).
+ */
+export async function runWithdrawalUsad(toAddress, amountUsadU64) {
+  await wasmReady;
+  await logTestnetStatus();
+
+  const amount = Number(amountUsadU64);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('USAD amount must be a positive number (u64 human, e.g. 1 = 1 USAD).');
+  }
+
+  const amountForTransfer = Math.round(amount * USAD_SCALE);
+  if (amountForTransfer <= 0) {
+    throw new Error('USAD amount too small after 6-decimal scaling.');
+  }
+
+  console.log('========================================');
+  console.log('🏦 Processing USAD withdrawal from vault');
+  console.log('========================================');
+  console.log('Vault address:', VAULT_ADDRESS);
+  console.log('User address :', toAddress);
+  console.log('Amount (u64) :', amount, '-> transfer amount (6 decimals):', amountForTransfer);
+  console.log('Fee (credits):', USAD_WITHDRAW_FEE_CREDITS);
+
+  const account = new Account({ privateKey: VAULT_PRIVATE_KEY });
+  const networkClient = new AleoNetworkClient(ALEO_RPC_URL);
+  networkClient.setAccount(account);
+  const keyProvider = new AleoKeyProvider();
+  keyProvider.useCache(true);
+  const recordProvider = new NetworkRecordProvider(account, networkClient);
+  const programManager = new ProgramManager(ALEO_RPC_URL, keyProvider, recordProvider);
+  programManager.setAccount(account);
+
+  // transfer_public_to_private: no token record. Transition inputs: r0 = address.private (recipient), r1 = u128.public (amount).
+  const inputs = [toAddress, `${amountForTransfer}u128`];
+
+  console.log(`\n🚀 Submitting ${USAD_TOKEN_PROGRAM}/transfer_public_to_private (vault public balance -> user private record)...`);
+  const txId = await programManager.execute({
+    programName: USAD_TOKEN_PROGRAM,
+    functionName: 'transfer_public_to_private',
+    priorityFee: USAD_WITHDRAW_FEE_CREDITS,
+    privateFee: false,
+    inputs,
+  });
+
+  console.log('✅ USAD withdrawal transaction submitted:', txId);
+  return txId;
+}
+
+/**
+ * USAD borrow: vault sends USAD to user via transfer_public_to_private.
+ */
+export async function runBorrowUsad(toAddress, amountUsadU64) {
+  await wasmReady;
+  await logTestnetStatus();
+
+  const amount = Number(amountUsadU64);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('USAD amount must be a positive number (u64 human, e.g. 1 = 1 USAD).');
+  }
+
+  const amountForTransfer = Math.round(amount * USAD_SCALE);
+  if (amountForTransfer <= 0) {
+    throw new Error('USAD amount too small after 6-decimal scaling.');
+  }
+
+  console.log('========================================');
+  console.log('🏦 Processing USAD borrow from vault');
+  console.log('========================================');
+  console.log('Vault address:', VAULT_ADDRESS);
+  console.log('User address :', toAddress);
+  console.log('Amount (u64) :', amount, '-> transfer amount (6 decimals):', amountForTransfer);
+  console.log('Fee (credits):', USAD_BORROW_FEE_CREDITS);
+
+  const account = new Account({ privateKey: VAULT_PRIVATE_KEY });
+  const networkClient = new AleoNetworkClient(ALEO_RPC_URL);
+  networkClient.setAccount(account);
+  const keyProvider = new AleoKeyProvider();
+  keyProvider.useCache(true);
+  const recordProvider = new NetworkRecordProvider(account, networkClient);
+  const programManager = new ProgramManager(ALEO_RPC_URL, keyProvider, recordProvider);
+  programManager.setAccount(account);
+
+  const inputs = [toAddress, `${amountForTransfer}u128`];
+
+  console.log(`\n🚀 Submitting ${USAD_TOKEN_PROGRAM}/transfer_public_to_private (vault -> user for USAD borrow)...`);
+  const txId = await programManager.execute({
+    programName: USAD_TOKEN_PROGRAM,
+    functionName: 'transfer_public_to_private',
+    priorityFee: USAD_BORROW_FEE_CREDITS,
+    privateFee: false,
+    inputs,
+  });
+
+  console.log('✅ USAD borrow (vault transfer) transaction submitted:', txId);
   return txId;
 }
 

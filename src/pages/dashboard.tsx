@@ -26,15 +26,27 @@ import {
   lendingWithdrawUsdc,
   getSuitableUsdcTokenRecord,
   getPrivateUsdcBalance,
+  lendingDepositUsad,
+  lendingBorrowUsad,
+  lendingRepayUsad,
+  lendingWithdrawUsad,
+  getSuitableUsadTokenRecord,
+  getPrivateUsadBalance,
   lendingAccrueInterest,
   lendingAccrueInterestUsdc,
+  lendingAccrueInterestUsad,
   debugAllRecords,
   LENDING_POOL_PROGRAM_ID,
   USDC_LENDING_POOL_PROGRAM_ID,
+  USAD_LENDING_POOL_PROGRAM_ID,
   computeAleoPoolAPY,
   computeUsdcPoolAPY,
+  computeUsadPoolAPY,
   getAleoPoolUserEffectivePosition,
   getPrivateCreditsBalance,
+  getUsadLendingPoolState,
+  createTestCredits,
+  depositTestReal,
 } from '@/components/aleo/rpc';
 import { frontendLogger } from '@/utils/logger';
 import { CURRENT_NETWORK } from '@/types';
@@ -59,6 +71,7 @@ const DashboardPage: NextPageWithLayout = () => {
     }
   }, [router.query.view, setView]);
 
+  const wallet = useWallet() as any;
   const {
     address,
     connected,
@@ -68,7 +81,8 @@ const DashboardPage: NextPageWithLayout = () => {
     requestRecords,
     requestTransactionHistory,
     decrypt,
-  } = useWallet();
+  } = wallet;
+  const requestTransaction = wallet.requestTransaction;
   const publicKey = address; // Use address as publicKey for compatibility
 
   // Avoid showing "Connect wallet" immediately after nav from Markets when already connected (adapter may restore state shortly)
@@ -92,6 +106,7 @@ const DashboardPage: NextPageWithLayout = () => {
   }, [connected]);
 
   const [amount, setAmount] = useState<number>(0);
+  const [testCreditsAmount, setTestCreditsAmount] = useState<number>(0);
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [txId, setTxId] = useState<string | null>(null);
   const [vaultWithdrawTxId, setVaultWithdrawTxId] = useState<string | null>(null);
@@ -146,10 +161,31 @@ const DashboardPage: NextPageWithLayout = () => {
   const [amountErrorUsdc, setAmountErrorUsdc] = useState<string | null>(null);
   const [privateUsdcBalance, setPrivateUsdcBalance] = useState<number | null>(null);
 
+  // USAD Pool state
+  const [totalSuppliedUsad, setTotalSuppliedUsad] = useState<string | null>(null);
+  const [totalBorrowedUsad, setTotalBorrowedUsad] = useState<string | null>(null);
+  const [utilizationIndexUsad, setUtilizationIndexUsad] = useState<string | null>(null);
+  const [liquidityIndexUsad, setLiquidityIndexUsad] = useState<string | null>(null);
+  const [borrowIndexUsad, setBorrowIndexUsad] = useState<string | null>(null);
+  const [supplyAPYUsad, setSupplyAPYUsad] = useState<number>(0);
+  const [borrowAPYUsad, setBorrowAPYUsad] = useState<number>(0);
+  const [userSuppliedUsad, setUserSuppliedUsad] = useState<string>('0');
+  const [userBorrowedUsad, setUserBorrowedUsad] = useState<string>('0');
+  const [effectiveUserSuppliedUsad, setEffectiveUserSuppliedUsad] = useState<number | null>(null);
+  const [effectiveUserBorrowedUsad, setEffectiveUserBorrowedUsad] = useState<number | null>(null);
+  const [totalDepositsUsad, setTotalDepositsUsad] = useState<string>('0');
+  const [totalWithdrawalsUsad, setTotalWithdrawalsUsad] = useState<string>('0');
+  const [totalBorrowsUsad, setTotalBorrowsUsad] = useState<string>('0');
+  const [totalRepaymentsUsad, setTotalRepaymentsUsad] = useState<string>('0');
+  const [isRefreshingUsadState, setIsRefreshingUsadState] = useState<boolean>(false);
+  const [amountUsad, setAmountUsad] = useState<number>(0);
+  const [amountErrorUsad, setAmountErrorUsad] = useState<string | null>(null);
+  const [privateUsadBalance, setPrivateUsadBalance] = useState<number | null>(null);
+
   // Action modal (Aave-style: withdraw/deposit/borrow/repay with overview + tx status)
   const [actionModalOpen, setActionModalOpen] = useState(false);
   const [actionModalMode, setActionModalMode] = useState<'withdraw' | 'deposit' | 'borrow' | 'repay'>('withdraw');
-  const [actionModalAsset, setActionModalAsset] = useState<'aleo' | 'usdc'>('aleo');
+  const [actionModalAsset, setActionModalAsset] = useState<'aleo' | 'usdc' | 'usad'>('aleo');
   const [actionModalSubmitted, setActionModalSubmitted] = useState(false);
 
   // Track if we've already triggered a one-time records permission request for this connection
@@ -352,6 +388,56 @@ const DashboardPage: NextPageWithLayout = () => {
     }
   }, [connected, requestRecords, publicKey, decrypt, isFetchingRecords]);
 
+  // Fetch user position for USAD pool (lending_pool_usad_v12.aleo) — same UserActivity record shape.
+  const fetchRecordsInBackgroundUsad = useCallback(async () => {
+    if (!connected || !requestRecords || !publicKey) return;
+    if (isFetchingRecords) return;
+    setIsFetchingRecords(true);
+    try {
+      const records = await requestRecords(USAD_LENDING_POOL_PROGRAM_ID, false);
+      if (!records || !Array.isArray(records) || records.length === 0) {
+        setUserSuppliedUsad('0');
+        setUserBorrowedUsad('0');
+        setTotalDepositsUsad('0');
+        setTotalWithdrawalsUsad('0');
+        setTotalBorrowsUsad('0');
+        setTotalRepaymentsUsad('0');
+        return;
+      }
+      if (!decrypt) return;
+      let totalDepositsAccum = 0;
+      let totalWithdrawalsAccum = 0;
+      let totalBorrowsAccum = 0;
+      let totalRepaymentsAccum = 0;
+      for (let i = 0; i < records.length; i++) {
+        const rec = records[i];
+        const cipher = extractCiphertext(rec);
+        if (!cipher) continue;
+        try {
+          const decryptedText = await decrypt(cipher);
+          totalDepositsAccum += extractU64FromText('total_deposits', decryptedText);
+          totalWithdrawalsAccum += extractU64FromText('total_withdrawals', decryptedText);
+          totalBorrowsAccum += extractU64FromText('total_borrows', decryptedText);
+          totalRepaymentsAccum += extractU64FromText('total_repayments', decryptedText);
+        } catch {
+          // skip
+        }
+      }
+      const netSupplied = Math.max(0, totalDepositsAccum - totalWithdrawalsAccum);
+      const netBorrowed = Math.max(0, totalBorrowsAccum - totalRepaymentsAccum);
+      setTotalDepositsUsad(String(totalDepositsAccum));
+      setTotalWithdrawalsUsad(String(totalWithdrawalsAccum));
+      setTotalBorrowsUsad(String(totalBorrowsAccum));
+      setTotalRepaymentsUsad(String(totalRepaymentsAccum));
+      setUserSuppliedUsad(String(netSupplied));
+      setUserBorrowedUsad(String(netBorrowed));
+    } catch (error: any) {
+      console.warn('fetchRecordsInBackgroundUsad:', error?.message);
+    } finally {
+      setIsFetchingRecords(false);
+    }
+  }, [connected, requestRecords, publicKey, decrypt, isFetchingRecords]);
+
   // Fetch all user records (both credits.aleo and lending_pool_v8.aleo)
   const fetchAllUserRecords = useCallback(async () => {
     if (!connected || !requestRecords || !publicKey) {
@@ -423,13 +509,18 @@ const DashboardPage: NextPageWithLayout = () => {
     return msg || 'Unknown error';
   };
 
-  const openActionModal = (mode: 'withdraw' | 'deposit' | 'borrow' | 'repay', asset: 'aleo' | 'usdc', prefilledAmount?: number) => {
+  const openActionModal = (
+    mode: 'withdraw' | 'deposit' | 'borrow' | 'repay',
+    asset: 'aleo' | 'usdc' | 'usad',
+    prefilledAmount?: number
+  ) => {
     setActionModalMode(mode);
     setActionModalAsset(asset);
     setActionModalSubmitted(false);
     setStatusMessage('');
     setAmountError(null);
     setAmountErrorUsdc(null);
+    setAmountErrorUsad(null);
     setTxId(null);
     setTxFinalized(false);
     setVaultWithdrawTxId(null);
@@ -437,6 +528,7 @@ const DashboardPage: NextPageWithLayout = () => {
     if (prefilledAmount != null) {
       setModalAmountInput(String(prefilledAmount));
       if (asset === 'usdc') setAmountUsdc(prefilledAmount);
+      else if (asset === 'usad') setAmountUsad(prefilledAmount);
       else setAmount(prefilledAmount);
     } else {
       setModalAmountInput('');
@@ -576,7 +668,7 @@ const DashboardPage: NextPageWithLayout = () => {
     walletAddress: string,
     txId: string,
     type: 'deposit' | 'withdraw' | 'borrow' | 'repay',
-    asset: 'aleo' | 'usdc',
+    asset: 'aleo' | 'usdc' | 'usad',
     amount: number,
     programId?: string,
     _vaultTxId?: string | null,
@@ -589,7 +681,7 @@ const DashboardPage: NextPageWithLayout = () => {
           wallet_address: walletAddress,
           tx_id: txId,
           type,
-          asset: asset === 'usdc' ? 'usdcx' : asset,
+          asset: asset === 'usdc' ? 'usdcx' : asset === 'usad' ? 'usadx' : asset,
           amount,
           program_id: programId ?? null,
         }),
@@ -716,11 +808,66 @@ const DashboardPage: NextPageWithLayout = () => {
     }
   };
 
+  const refreshUsadPoolState = async (includeUserPosition: boolean = false) => {
+    try {
+      setIsRefreshingUsadState(true);
+      const state = await getUsadLendingPoolState();
+      setTotalSuppliedUsad(state.totalSupplied ?? '0');
+      setTotalBorrowedUsad(state.totalBorrowed ?? '0');
+      setUtilizationIndexUsad(state.utilizationIndex ?? '0');
+      setLiquidityIndexUsad(state.liquidityIndex ?? null);
+      setBorrowIndexUsad(state.borrowIndex ?? null);
+      const ts = Number(state.totalSupplied ?? 0) || 0;
+      const tb = Number(state.totalBorrowed ?? 0) || 0;
+      const { supplyAPY: sApy, borrowAPY: bApy } = computeUsadPoolAPY(ts, tb);
+      setSupplyAPYUsad(sApy);
+      setBorrowAPYUsad(bApy);
+
+      if (includeUserPosition && requestRecords && publicKey) {
+        try {
+          await fetchRecordsInBackgroundUsad();
+          const effective = await getAleoPoolUserEffectivePosition(USAD_LENDING_POOL_PROGRAM_ID, publicKey);
+          if (effective) {
+            setEffectiveUserSuppliedUsad(effective.effectiveSupplyBalance);
+            setEffectiveUserBorrowedUsad(effective.effectiveBorrowDebt);
+          } else {
+            setEffectiveUserSuppliedUsad(null);
+            setEffectiveUserBorrowedUsad(null);
+          }
+
+          getPrivateUsadBalance(requestRecords, decrypt)
+            .then(setPrivateUsadBalance)
+            .catch(() => setPrivateUsadBalance(null));
+        } catch (error) {
+          console.warn('Failed to refresh USAD user position:', error);
+          setUserSuppliedUsad('0');
+          setUserBorrowedUsad('0');
+          setTotalDepositsUsad('0');
+          setTotalWithdrawalsUsad('0');
+          setTotalBorrowsUsad('0');
+          setTotalRepaymentsUsad('0');
+          setEffectiveUserSuppliedUsad(null);
+          setEffectiveUserBorrowedUsad(null);
+          setPrivateUsadBalance(null);
+        }
+      } else {
+        setEffectiveUserSuppliedUsad(null);
+        setEffectiveUserBorrowedUsad(null);
+        setPrivateUsadBalance(null);
+      }
+    } catch (e) {
+      console.error('Failed to fetch USAD pool state', e);
+    } finally {
+      setIsRefreshingUsadState(false);
+    }
+  };
+
   // One-time pool state fetch on page load/refresh and when wallet connects.
   // This DOES NOT touch private records / requestRecords to avoid extra wallet prompts.
   useEffect(() => {
     refreshPoolState(false);
     refreshUsdcPoolState(false);
+    refreshUsadPoolState(false);
   }, [publicKey, connected]);
 
   // When wallet connects, trigger a ONE-TIME broad records request to get permissions up front.
@@ -761,6 +908,12 @@ const DashboardPage: NextPageWithLayout = () => {
           console.warn(`⚠️ Failed to pre-initialize permissions for ${USDC_LENDING_POOL_PROGRAM_ID}:`, e?.message);
         }
         try {
+          await requestRecords(USAD_LENDING_POOL_PROGRAM_ID, false);
+          console.log(`✅ Wallet record permissions initialized for ${USAD_LENDING_POOL_PROGRAM_ID}`);
+        } catch (e: any) {
+          console.warn(`⚠️ Failed to pre-initialize permissions for ${USAD_LENDING_POOL_PROGRAM_ID}:`, e?.message);
+        }
+        try {
           await requestRecords('credits.aleo', false);
           console.log('✅ Wallet record permissions initialized for credits.aleo');
         } catch (e: any) {
@@ -790,6 +943,7 @@ const DashboardPage: NextPageWithLayout = () => {
       try {
         await refreshPoolState(true);
         await refreshUsdcPoolState(true);
+        await refreshUsadPoolState(true);
       } finally {
         setUserPositionInitialized(true);
       }
@@ -869,20 +1023,16 @@ const DashboardPage: NextPageWithLayout = () => {
       ); // ALEO
       // When pool state is not loaded (totalSupplied 0), allow withdraw up to user position; program will enforce liquidity
       const poolStateLoaded = poolSuppliedMicro > 0 || poolBorrowedMicro > 0;
+      // LTV-safe withdraw limit: w <= C - D/0.75
+      const maxWithdrawByLtv = Math.max(0, netSupplied - netBorrowed / 0.75);
       const maxWithdrawable = poolStateLoaded
-        ? Math.min(netSupplied, availableLiquidity)
-        : netSupplied;
+        ? Math.min(netSupplied, availableLiquidity, maxWithdrawByLtv)
+        : Math.min(netSupplied, maxWithdrawByLtv);
 
       if (action === 'withdraw' && amount > maxWithdrawable) {
-        const msg = poolStateLoaded && availableLiquidity < netSupplied
-          ? `You can withdraw at most ${maxWithdrawable.toFixed(
-              2,
-            )} ALEO (available pool liquidity). Your position is ${netSupplied.toFixed(
-              2,
-            )} ALEO but only ${availableLiquidity.toFixed(2)} ALEO is free for withdrawal.`
-          : `You can withdraw at most ${netSupplied.toFixed(
-              2,
-            )} ALEO from your current position.`;
+        const msg = `You can withdraw at most ${maxWithdrawable.toFixed(
+          4,
+        )} ALEO. This is capped by your supply, pool liquidity, and 75% LTV safety.`;
         setAmountError(msg);
         setStatusMessage(msg);
         setLoading(false);
@@ -1140,30 +1290,34 @@ const DashboardPage: NextPageWithLayout = () => {
       const poolSuppliedMicro = Number(totalSuppliedUsdc) || 0;
       const poolBorrowedMicro = Number(totalBorrowedUsdc) || 0;
       const netSuppliedHuman = netSuppliedMicro / USDC_SCALE;
-      const maxRepayHuman = netBorrowedMicro / USDC_SCALE;
+      const netBorrowedHuman = netBorrowedMicro / USDC_SCALE;
+      const maxRepayHuman = netBorrowedHuman;
       const availableLiquidityHuman = Math.max(0, (poolSuppliedMicro - poolBorrowedMicro) / USDC_SCALE);
       const poolStateLoadedUsdc = poolSuppliedMicro > 0 || poolBorrowedMicro > 0;
+      // Match ALEO pool: 75% LTV — max borrow = min(pool liquidity, 0.75 * collateral - existing debt)
+      const maxBorrowUsdcByLtv = Math.max(0, netSuppliedHuman * 0.75 - netBorrowedHuman);
+      const maxBorrowUsdc = Math.max(0, Math.min(availableLiquidityHuman, maxBorrowUsdcByLtv));
+      // Withdraw: w <= min(supply, liquidity, C - D/0.75) — same as handleAction (ALEO)
+      const maxWithdrawUsdcByLtv = Math.max(0, netSuppliedHuman - netBorrowedHuman / 0.75);
       const maxWithdrawHuman = poolStateLoadedUsdc
-        ? Math.min(netSuppliedHuman, availableLiquidityHuman)
-        : netSuppliedHuman;
+        ? Math.min(netSuppliedHuman, availableLiquidityHuman, maxWithdrawUsdcByLtv)
+        : Math.min(netSuppliedHuman, maxWithdrawUsdcByLtv);
       if (action === 'withdraw' && amountUsdc > maxWithdrawHuman) {
-        const msg = poolStateLoadedUsdc && availableLiquidityHuman < netSuppliedHuman
-          ? `You can withdraw at most ${maxWithdrawHuman.toFixed(2)} USDCx (available pool liquidity). Your position is ${netSuppliedHuman.toFixed(2)} USDCx but only ${availableLiquidityHuman.toFixed(2)} USDCx is free for withdrawal.`
-          : `You can withdraw at most ${netSuppliedHuman.toFixed(2)} USDCx from your current position.`;
+        const msg = `You can withdraw at most ${maxWithdrawHuman.toFixed(4)} USDCx. Capped by your supply, pool liquidity, and 75% LTV safety (same rules as ALEO pool).`;
         setAmountErrorUsdc(msg);
         setStatusMessage(msg);
         setLoading(false);
         return;
       }
       if (action === 'repay' && amountUsdc > maxRepayHuman) {
-        const msg = `Repay at most ${maxRepayHuman.toFixed(2)} USDCx.`;
+        const msg = `Repay at most ${maxRepayHuman.toFixed(4)} USDCx (your position). On-chain debt may differ slightly due to interest — reduce amount if the tx rejects.`;
         setAmountErrorUsdc(msg);
         setStatusMessage(msg);
         setLoading(false);
         return;
       }
-      if (action === 'borrow' && amountUsdc > availableLiquidityHuman) {
-        const msg = `Borrow exceeds available liquidity (${availableLiquidityHuman.toFixed(2)} USDCx).`;
+      if (action === 'borrow' && poolStateLoadedUsdc && amountUsdc > maxBorrowUsdc) {
+        const msg = `Borrow exceeds your available borrow (${maxBorrowUsdc.toFixed(4)} USDCx). Capped by 75% LTV and pool liquidity (same as ALEO pool).`;
         setAmountErrorUsdc(msg);
         setStatusMessage(msg);
         setLoading(false);
@@ -1295,7 +1449,7 @@ const DashboardPage: NextPageWithLayout = () => {
             publicKey,
             finalTxId,
             action,
-            'usdcx',
+            'usdc',
             amountUsdc,
             USDC_LENDING_POOL_PROGRAM_ID
           )
@@ -1306,7 +1460,7 @@ const DashboardPage: NextPageWithLayout = () => {
       // Backend watcher picks up the row and performs vault transfer; no frontend call.
       if (action === 'withdraw' || action === 'borrow') {
         if (publicKey) {
-          await saveTransactionToSupabase(publicKey, finalTxId, action, 'usdcx', amountUsdc, USDC_LENDING_POOL_PROGRAM_ID, null).catch(() => {});
+          await saveTransactionToSupabase(publicKey, finalTxId, action, 'usdc', amountUsdc, USDC_LENDING_POOL_PROGRAM_ID, null).catch(() => {});
           fetchTransactionHistory();
         }
       }
@@ -1329,6 +1483,233 @@ const DashboardPage: NextPageWithLayout = () => {
         errorLower.includes('exceeds available') ||
         errorLower.includes('insufficient liquidity');
       if (isLiquidityOrLimit) setAmountErrorUsdc(displayMsg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleActionUsad = async (action: 'deposit' | 'borrow' | 'repay' | 'withdraw') => {
+    if (!connected || !publicKey || !executeTransaction || !requestRecords) {
+      setStatusMessage('Please connect your wallet.');
+      return;
+    }
+    try {
+      setLoading(true);
+      setStatusMessage(`Executing USAD ${action}...`);
+      setAmountErrorUsad(null);
+      if (amountUsad <= 0) {
+        throw new Error('Amount must be greater than zero.');
+      }
+
+      const amountMicro = Math.round(amountUsad * 1_000_000);
+      const USAD_SCALE = 1_000_000;
+      const netSuppliedMicro = (effectiveUserSuppliedUsad ?? Number(userSuppliedUsad)) || 0;
+      const netBorrowedMicro = (effectiveUserBorrowedUsad ?? Number(userBorrowedUsad)) || 0;
+      const poolSuppliedMicro = Number(totalSuppliedUsad) || 0;
+      const poolBorrowedMicro = Number(totalBorrowedUsad) || 0;
+
+      const netSuppliedHuman = netSuppliedMicro / USAD_SCALE;
+      const netBorrowedHuman = netBorrowedMicro / USAD_SCALE;
+      const maxRepayHuman = netBorrowedHuman;
+      const availableLiquidityHuman = Math.max(0, (poolSuppliedMicro - poolBorrowedMicro) / USAD_SCALE);
+      const poolStateLoadedUsad = poolSuppliedMicro > 0 || poolBorrowedMicro > 0;
+      const maxBorrowUsadByLtv = Math.max(0, netSuppliedHuman * 0.75 - netBorrowedHuman);
+      const maxBorrowUsad = Math.max(0, Math.min(availableLiquidityHuman, maxBorrowUsadByLtv));
+      const maxWithdrawUsadByLtv = Math.max(0, netSuppliedHuman - netBorrowedHuman / 0.75);
+      const maxWithdrawHuman = poolStateLoadedUsad
+        ? Math.min(netSuppliedHuman, availableLiquidityHuman, maxWithdrawUsadByLtv)
+        : Math.min(netSuppliedHuman, maxWithdrawUsadByLtv);
+
+      if (action === 'withdraw' && amountUsad > maxWithdrawHuman) {
+        const msg = `You can withdraw at most ${maxWithdrawHuman.toFixed(4)} USADx. Capped by supply, pool liquidity, and 75% LTV (same as ALEO pool).`;
+        setAmountErrorUsad(msg);
+        setStatusMessage(msg);
+        setLoading(false);
+        return;
+      }
+      if (action === 'repay' && amountUsad > maxRepayHuman) {
+        const msg = `Repay at most ${maxRepayHuman.toFixed(4)} USADx. On-chain debt may differ slightly — reduce amount if the tx rejects.`;
+        setAmountErrorUsad(msg);
+        setStatusMessage(msg);
+        setLoading(false);
+        return;
+      }
+      if (action === 'borrow' && poolStateLoadedUsad && amountUsad > maxBorrowUsad) {
+        const msg = `Borrow exceeds your available borrow (${maxBorrowUsad.toFixed(4)} USADx). Capped by 75% LTV and pool liquidity.`;
+        setAmountErrorUsad(msg);
+        setStatusMessage(msg);
+        setLoading(false);
+        return;
+      }
+
+      if (action === 'deposit' || action === 'repay') {
+        let balance = privateUsadBalance;
+        if (balance === null && requestRecords) {
+          balance = await getPrivateUsadBalance(requestRecords, decrypt);
+          setPrivateUsadBalance(balance);
+        }
+        if (amountUsad > (balance ?? 0)) {
+          const msg = `Insufficient private USAD. Your balance: ${(Math.floor((balance ?? 0) * 100) / 100).toFixed(2)} USAD.`;
+          setAmountErrorUsad(msg);
+          setStatusMessage(msg);
+          setLoading(false);
+          return;
+        }
+      }
+
+      setActionModalSubmitted(true);
+      let tx: string;
+
+      switch (action) {
+        case 'deposit': {
+          let tokenRecord = await getSuitableUsadTokenRecord(requestRecords, amountMicro, publicKey);
+          if (!tokenRecord) {
+            setAmountErrorUsad('No USAD record found with sufficient balance. Get USAD from the faucet or select a record. Check browser console (F12) for details.');
+            setStatusMessage('No USADx record with sufficient balance.');
+            setLoading(false);
+            return;
+          }
+          if (!tokenRecord.plaintext && decrypt) {
+            const cipher = tokenRecord.recordCiphertext ?? tokenRecord.record_ciphertext ?? tokenRecord.ciphertext;
+            if (typeof cipher === 'string') {
+              try {
+                const plain = await decrypt(cipher);
+                if (plain) tokenRecord = { ...tokenRecord, plaintext: plain };
+              } catch (e) {
+                console.warn('[USAD Deposit] Decrypt failed, using ciphertext:', e);
+              }
+            }
+          }
+          tx = await lendingDepositUsad(executeTransaction, amountUsad, tokenRecord, undefined, publicKey);
+          break;
+        }
+
+        case 'repay': {
+          let tokenRecord = await getSuitableUsadTokenRecord(requestRecords, amountMicro, publicKey);
+          if (!tokenRecord) {
+            setAmountErrorUsad('No USAD record found with sufficient balance for repay. Check browser console (F12) for details.');
+            setStatusMessage('No USAD record with sufficient balance.');
+            setLoading(false);
+            return;
+          }
+          if (!tokenRecord.plaintext && decrypt) {
+            const cipher = tokenRecord.recordCiphertext ?? tokenRecord.record_ciphertext ?? tokenRecord.ciphertext;
+            if (typeof cipher === 'string') {
+              try {
+                const plain = await decrypt(cipher);
+                if (plain) tokenRecord = { ...tokenRecord, plaintext: plain };
+              } catch (e) {
+                console.warn('[USAD Repay] Decrypt failed, using ciphertext:', e);
+              }
+            }
+          }
+          tx = await lendingRepayUsad(executeTransaction, amountUsad, tokenRecord, undefined, publicKey);
+          break;
+        }
+
+        case 'withdraw': {
+          tx = await lendingWithdrawUsad(executeTransaction, amountUsad);
+          break;
+        }
+
+        case 'borrow': {
+          tx = await lendingBorrowUsad(executeTransaction, amountUsad);
+          break;
+        }
+
+        default:
+          throw new Error(`Unknown action: ${action}`);
+      }
+
+      if (tx === '__CANCELLED__') {
+        setStatusMessage('Transaction cancelled by user.');
+        if (!isDevAppEnv) setTimeout(() => setStatusMessage(''), 2500);
+        setLoading(false);
+        return;
+      }
+
+      setTxId(null);
+      setTxFinalized(false);
+      setStatusMessage('Transaction submitted. Waiting for finalization…');
+
+      let finalized = false;
+      let txFailed = false;
+      let finalTxId = tx;
+
+      for (let attempt = 1; attempt <= 45; attempt++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (transactionStatus) {
+          try {
+            const statusResult = await transactionStatus(tx);
+            const statusText = typeof statusResult === 'string' ? statusResult : (statusResult as any)?.status ?? '';
+            const statusLower = (statusText || '').toLowerCase();
+
+            if (statusLower === 'finalized' || statusLower === 'accepted') {
+              finalized = true;
+              finalTxId = (typeof statusResult === 'object' && (statusResult as any).transactionId) || tx;
+              setTxId(isExplorerHash(finalTxId) ? finalTxId : null);
+              break;
+            }
+            if (statusLower === 'rejected' || statusLower === 'failed' || statusLower === 'dropped') {
+              txFailed = true;
+              setStatusMessage(`Transaction ${statusLower}. Vault transfer was not requested.`);
+              setLoading(false);
+              return;
+            }
+          } catch {
+            // continue polling
+          }
+        }
+      }
+
+      if (txFailed) {
+        setLoading(false);
+        return;
+      }
+
+      if (!finalized) {
+        setStatusMessage('Transaction not finalized in time. Please check the explorer. Backend will process vault transfer once it is finalized.');
+        setLoading(false);
+        return;
+      }
+
+      setTxFinalized(true);
+
+      if (action === 'deposit' || action === 'repay') {
+        if (publicKey) {
+          saveTransactionToSupabase(publicKey, finalTxId, action, 'usad', amountUsad, USAD_LENDING_POOL_PROGRAM_ID)
+            .then(() => fetchTransactionHistory())
+            .catch(() => {});
+        }
+      }
+
+      // Backend watcher picks up the row and performs vault transfer; no frontend call.
+      if (action === 'withdraw' || action === 'borrow') {
+        if (publicKey) {
+          await saveTransactionToSupabase(publicKey, finalTxId, action, 'usad', amountUsad, USAD_LENDING_POOL_PROGRAM_ID, null).catch(() => {});
+          fetchTransactionHistory();
+        }
+      }
+
+      setAmountUsad(0);
+      try {
+        await refreshUsadPoolState(true);
+        setStatusMessage('Transaction finalized! Pool refreshed.');
+        if (!isDevAppEnv) setTimeout(() => setStatusMessage(''), 2500);
+      } catch {
+        setStatusMessage('Transaction finalized. Click Refresh to update pool.');
+      }
+    } catch (e: any) {
+      const displayMsg = getErrorMessage(e);
+      setStatusMessage(displayMsg);
+      const errorLower = displayMsg.toLowerCase();
+      const isLiquidityOrLimit =
+        errorLower.includes('withdraw at most') ||
+        errorLower.includes('available pool liquidity') ||
+        errorLower.includes('free for withdrawal') ||
+        errorLower.includes('exceeds available') ||
+        errorLower.includes('insufficient liquidity');
+      if (isLiquidityOrLimit) setAmountErrorUsad(displayMsg);
     } finally {
       setLoading(false);
     }
@@ -1368,7 +1749,7 @@ const DashboardPage: NextPageWithLayout = () => {
             const status = await transactionStatus(tx);
             console.log(`🧪 Create Test Credits: Poll attempt ${attempt}/${maxAttempts}, status:`, status);
             
-            if (status && (status.status === 'Finalized' || status.finalized)) {
+            if (status && (status.status === 'Finalized' || (status as any).finalized)) {
               finalized = true;
               const resolvedId = (typeof status === 'object' && (status as any).transactionId) || tx;
               setTxId(isExplorerHash(resolvedId) ? resolvedId : null);
@@ -1447,7 +1828,7 @@ const DashboardPage: NextPageWithLayout = () => {
             const status = await transactionStatus(tx);
             console.log(`🧪 Deposit Test Real: Poll attempt ${attempt}/${maxAttempts}, status:`, status);
             
-            if (status && (status.status === 'Finalized' || status.finalized)) {
+            if (status && (status.status === 'Finalized' || (status as any).finalized)) {
               finalized = true;
               const resolvedId = (typeof status === 'object' && (status as any).transactionId) || tx;
               setTxId(isExplorerHash(resolvedId) ? resolvedId : null);
@@ -1516,40 +1897,37 @@ const DashboardPage: NextPageWithLayout = () => {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         
-        if (transactionStatus) {
-          try {
-            const statusResult = await transactionStatus(tx);
-            console.log(`📊 Accrue interest status (attempt ${attempt}):`, statusResult);
+        try {
+          const statusResult = await transactionStatus(tx);
+          console.log(`📊 Accrue interest status (attempt ${attempt}):`, statusResult);
 
-            const statusText =
-              typeof statusResult === 'string'
-                ? statusResult
-                : (statusResult as any)?.status ?? '';
-            const statusLower = (statusText || '').toLowerCase();
+          const statusText =
+            typeof statusResult === 'string'
+              ? statusResult
+              : (statusResult as any)?.status ?? '';
+          const statusLower = (statusText || '').toLowerCase();
 
-            if (statusLower === 'finalized' || statusLower === 'accepted') {
-              finalized = true;
-              const resolvedId = (typeof statusResult === 'object' && (statusResult as any).transactionId) || tx;
-              setTxId(isExplorerHash(resolvedId) ? resolvedId : null);
-              setTxFinalized(true);
-              // Fetch records in background after interest accrual finalizes
-              if (requestRecords && publicKey) {
-                console.log('📋 Interest accrual finalized - fetching records in background...');
-                fetchRecordsInBackground(LENDING_POOL_PROGRAM_ID);
-              }
-              break;
+          if (statusLower === 'finalized' || statusLower === 'accepted') {
+            finalized = true;
+            const resolvedId =
+              (typeof statusResult === 'object' && (statusResult as any).transactionId) || tx;
+            setTxId(isExplorerHash(resolvedId) ? resolvedId : null);
+            setTxFinalized(true);
+            // Fetch records in background after interest accrual finalizes
+            if (requestRecords && publicKey) {
+              console.log('📋 Interest accrual finalized - fetching records in background...');
+              fetchRecordsInBackground(LENDING_POOL_PROGRAM_ID);
             }
-            setStatusMessage(
-              `Interest accrual ${statusText || 'pending'}... (attempt ${attempt}/${maxAttempts})`,
-            );
-          } catch (e) {
-            // If transactionStatus fails, continue polling
-            console.warn('Failed to check transaction status:', e);
+            break;
           }
-        } else {
-          // Fallback: just wait and assume it will finalize
+          setStatusMessage(
+            `Interest accrual ${statusText || 'pending'}... (attempt ${attempt}/${maxAttempts})`,
+          );
+        } catch (e) {
+          // If transactionStatus fails, continue polling; assume finalized at max wait.
+          console.warn('Failed to check transaction status:', e);
           if (attempt === maxAttempts) {
-            finalized = true; // Assume finalized after max wait time
+            finalized = true;
           }
         }
       }
@@ -1641,7 +2019,13 @@ const DashboardPage: NextPageWithLayout = () => {
       if (!finalized) {
         setStatusMessage('USDC interest accrual submitted but not finalized in time. Please check the explorer.');
       } else {
-        setStatusMessage('USDC interest accrued successfully.');
+        try {
+          await refreshUsdcPoolState(true);
+          setStatusMessage('USDC interest accrued and finalized! Pool state refreshed.');
+          if (!isDevAppEnv) setTimeout(() => setStatusMessage(''), 2500);
+        } catch {
+          setStatusMessage('USDC interest accrued successfully. Click Refresh to update pool.');
+        }
       }
     } catch (e: any) {
       setStatusMessage(e?.message || 'USDC accrue interest failed.');
@@ -1701,10 +2085,12 @@ const DashboardPage: NextPageWithLayout = () => {
   // Display values for merged Aave-style view (human units)
   const supplyBalanceAleo = ((effectiveUserSupplied ?? Number(userSupplied)) || 0) / 1_000_000;
   const supplyBalanceUsdc = ((effectiveUserSuppliedUsdc ?? Number(userSuppliedUsdc)) || 0) / 1_000_000;
+  const supplyBalanceUsad = ((effectiveUserSuppliedUsad ?? Number(userSuppliedUsad)) || 0) / 1_000_000;
   const borrowDebtAleo = ((effectiveUserBorrowed ?? Number(userBorrowed)) || 0) / 1_000_000;
   const borrowDebtUsdc = ((effectiveUserBorrowedUsdc ?? Number(userBorrowedUsdc)) || 0) / 1_000_000;
-  const totalSupplyBalance = supplyBalanceAleo + supplyBalanceUsdc; // mixed units for count only
-  const totalBorrowDebt = borrowDebtAleo + borrowDebtUsdc;
+  const borrowDebtUsad = ((effectiveUserBorrowedUsad ?? Number(userBorrowedUsad)) || 0) / 1_000_000;
+  const totalSupplyBalance = supplyBalanceAleo + supplyBalanceUsdc + supplyBalanceUsad; // mixed units for count only
+  const totalBorrowDebt = borrowDebtAleo + borrowDebtUsdc + borrowDebtUsad;
 
   // Simple loading flags for balances
   const walletBalancesLoading = connected && !userPositionInitialized;
@@ -1716,14 +2102,32 @@ const DashboardPage: NextPageWithLayout = () => {
     0,
     ((Number(totalSuppliedUsdc) || 0) - (Number(totalBorrowedUsdc) || 0)) / 1_000_000,
   );
+  const availableUsad = Math.max(
+    0,
+    ((Number(totalSuppliedUsad) || 0) - (Number(totalBorrowedUsad) || 0)) / 1_000_000,
+  );
 
   // Borrow availability is constrained by BOTH:
   // - Pool liquidity (availableAleo/availableUsdc)
   // - User LTV: max_debt = 75% of collateral (minus existing debt)
   const maxBorrowAleoByLtv = Math.max(0, supplyBalanceAleo * 0.75 - borrowDebtAleo);
   const maxBorrowUsdcByLtv = Math.max(0, supplyBalanceUsdc * 0.75 - borrowDebtUsdc);
+  const maxBorrowUsadByLtv = Math.max(0, supplyBalanceUsad * 0.75 - borrowDebtUsad);
   const availableBorrowAleo = Math.max(0, Math.min(availableAleo, maxBorrowAleoByLtv));
   const availableBorrowUsdc = Math.max(0, Math.min(availableUsdc, maxBorrowUsdcByLtv));
+  const availableBorrowUsad = Math.max(0, Math.min(availableUsad, maxBorrowUsadByLtv));
+
+  // Withdraw availability is constrained by BOTH:
+  // - User balance (cannot withdraw more than supplied)
+  // - Pool liquidity (availableAleo/availableUsdc)
+  // - LTV safety (with remaining collateral, max debt is 75% of collateral)
+  //   D <= 0.75 * (C - w)  =>  w <= C - D/0.75
+  const maxWithdrawAleoByLtv = Math.max(0, supplyBalanceAleo - borrowDebtAleo / 0.75);
+  const maxWithdrawUsdcByLtv = Math.max(0, supplyBalanceUsdc - borrowDebtUsdc / 0.75);
+  const maxWithdrawUsadByLtv = Math.max(0, supplyBalanceUsad - borrowDebtUsad / 0.75);
+  const availableWithdrawAleo = Math.max(0, Math.min(supplyBalanceAleo, availableAleo, maxWithdrawAleoByLtv));
+  const availableWithdrawUsdc = Math.max(0, Math.min(supplyBalanceUsdc, availableUsdc, maxWithdrawUsdcByLtv));
+  const availableWithdrawUsad = Math.max(0, Math.min(supplyBalanceUsad, availableUsad, maxWithdrawUsadByLtv));
 
   const modalAmount = (() => {
     const n = Number(modalAmountInput);
@@ -1732,24 +2136,47 @@ const DashboardPage: NextPageWithLayout = () => {
 
   const actionModalTitle =
     actionModalMode === 'withdraw'
-      ? `Withdraw ${actionModalAsset === 'aleo' ? 'ALEO' : 'USDCx'}`
+      ? `Withdraw ${
+          actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USADx'
+        }`
       : actionModalMode === 'deposit'
-        ? `Deposit ${actionModalAsset === 'aleo' ? 'ALEO' : 'USDCx'}`
+        ? `Deposit ${
+            actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USADx'
+          }`
         : actionModalMode === 'borrow'
-          ? `Borrow ${actionModalAsset === 'aleo' ? 'ALEO' : 'USDCx'}`
-          : `Repay ${actionModalAsset === 'aleo' ? 'ALEO' : 'USDCx'}`;
+          ? `Borrow ${
+              actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USADx'
+            }`
+          : `Repay ${
+              actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USADx'
+            }`;
 
-  const supplyBalanceModal = actionModalAsset === 'aleo' ? supplyBalanceAleo : supplyBalanceUsdc;
-  const debtBalanceModal = actionModalAsset === 'aleo' ? borrowDebtAleo : borrowDebtUsdc;
-  const privateBalanceModal = actionModalAsset === 'aleo' ? (privateAleoBalance ?? 0) : (privateUsdcBalance ?? 0);
+  const supplyBalanceModal =
+    actionModalAsset === 'aleo' ? supplyBalanceAleo : actionModalAsset === 'usdc' ? supplyBalanceUsdc : supplyBalanceUsad;
+  const debtBalanceModal =
+    actionModalAsset === 'aleo' ? borrowDebtAleo : actionModalAsset === 'usdc' ? borrowDebtUsdc : borrowDebtUsad;
+  const privateBalanceModal =
+    actionModalAsset === 'aleo'
+      ? (privateAleoBalance ?? 0)
+      : actionModalAsset === 'usdc'
+        ? (privateUsdcBalance ?? 0)
+        : (privateUsadBalance ?? 0);
   // Max amount constraints per action type (used to disable action button)
   const modalMaxAmount =
     actionModalMode === 'deposit'
       ? privateBalanceModal
       : actionModalMode === 'withdraw'
-        ? supplyBalanceModal
+        ? actionModalAsset === 'aleo'
+          ? availableWithdrawAleo
+          : actionModalAsset === 'usdc'
+            ? availableWithdrawUsdc
+            : availableWithdrawUsad
         : actionModalMode === 'borrow'
-          ? (actionModalAsset === 'aleo' ? availableAleo : availableUsdc)
+          ? actionModalAsset === 'aleo'
+            ? availableBorrowAleo
+            : actionModalAsset === 'usdc'
+              ? availableBorrowUsdc
+              : availableBorrowUsad
           : debtBalanceModal;
 
   const remainingSupply = actionModalMode === 'withdraw'
@@ -1805,17 +2232,25 @@ const DashboardPage: NextPageWithLayout = () => {
                           setModalAmountInput(val);
                           const n = Number(val);
                           if (!Number.isNaN(n)) {
-                            if (actionModalAsset === 'usdc') {
-                              setAmountUsdc(n);
-                            } else {
-                              setAmount(n);
-                            }
+                          if (actionModalAsset === 'usdc') {
+                            setAmountUsdc(n);
+                          } else if (actionModalAsset === 'usad') {
+                            setAmountUsad(n);
+                          } else {
+                            setAmount(n);
+                          }
                           }
                         }}
                         placeholder="0.00"
                         className="input input-bordered flex-1 bg-transparent border-0 focus:outline-none"
                       />
-                      <span className="font-medium">{actionModalAsset === 'aleo' ? 'ALEO' : 'USDCx'}</span>
+                      <span className="font-medium">
+                        {actionModalAsset === 'aleo'
+                          ? 'ALEO'
+                          : actionModalAsset === 'usdc'
+                            ? 'USDCx'
+                            : 'USADx'}
+                      </span>
                     </div>
                     <div className="flex items-center justify-between mt-1 text-sm text-base-content/70">
                       <span>
@@ -1831,7 +2266,13 @@ const DashboardPage: NextPageWithLayout = () => {
                         : actionModalMode === 'deposit'
                           ? privateBalanceModal.toFixed(7)
                           : actionModalMode === 'borrow'
-                            ? (actionModalAsset === 'aleo' ? availableBorrowAleo : availableBorrowUsdc).toFixed(7)
+                            ? (
+                              actionModalAsset === 'aleo'
+                                ? availableBorrowAleo
+                                : actionModalAsset === 'usdc'
+                                  ? availableBorrowUsdc
+                                  : availableBorrowUsad
+                            ).toFixed(7)
                             : debtBalanceModal.toFixed(7)}
                         {' '}
                         <button
@@ -1844,11 +2285,19 @@ const DashboardPage: NextPageWithLayout = () => {
                                 : actionModalMode === 'deposit'
                                   ? privateBalanceModal
                                   : actionModalMode === 'borrow'
-                                    ? (actionModalAsset === 'aleo' ? availableBorrowAleo : availableBorrowUsdc)
+                                    ? (
+                                      actionModalAsset === 'aleo'
+                                        ? availableBorrowAleo
+                                        : actionModalAsset === 'usdc'
+                                          ? availableBorrowUsdc
+                                          : availableBorrowUsad
+                                    )
                                     : debtBalanceModal;
                             setModalAmountInput(String(maxVal));
                             if (actionModalAsset === 'usdc') {
                               setAmountUsdc(maxVal);
+                            } else if (actionModalAsset === 'usad') {
+                              setAmountUsad(maxVal);
                             } else {
                               setAmount(maxVal);
                             }
@@ -1865,12 +2314,27 @@ const DashboardPage: NextPageWithLayout = () => {
                       <span className="text-base-content/70">
                         {actionModalMode === 'withdraw' ? 'Remaining supply' : actionModalMode === 'deposit' ? 'Supply after' : actionModalMode === 'borrow' ? 'Debt after' : 'Remaining debt'}
                       </span>
-                      <span>{remainingSupply.toFixed(7)} {actionModalAsset === 'aleo' ? 'ALEO' : 'USDCx'}</span>
+                      <span>
+                        {remainingSupply.toFixed(7)}{' '}
+                        {actionModalAsset === 'aleo'
+                          ? 'ALEO'
+                          : actionModalAsset === 'usdc'
+                            ? 'USDCx'
+                            : 'USADx'}
+                      </span>
                     </div>
                   </div>
-                  {(actionModalAsset === 'aleo' ? amountError : amountErrorUsdc) ? (
+                  {(actionModalAsset === 'aleo'
+                    ? amountError
+                    : actionModalAsset === 'usdc'
+                      ? amountErrorUsdc
+                      : amountErrorUsad) ? (
                     <div className="rounded-lg bg-error/15 border border-error/30 px-4 py-3 text-error text-sm">
-                      {actionModalAsset === 'aleo' ? amountError : amountErrorUsdc}
+                      {actionModalAsset === 'aleo'
+                        ? amountError
+                        : actionModalAsset === 'usdc'
+                          ? amountErrorUsdc
+                          : amountErrorUsad}
                     </div>
                   ) : statusMessage ? (
                     <div className="rounded-lg bg-error/15 border border-error/30 px-4 py-3 text-error text-sm">
@@ -1889,6 +2353,8 @@ const DashboardPage: NextPageWithLayout = () => {
                     onClick={async () => {
                       if (actionModalAsset === 'usdc') {
                         await handleActionUsdc(actionModalMode);
+                      } else if (actionModalAsset === 'usad') {
+                        await handleActionUsad(actionModalMode);
                       } else {
                         await handleAction(actionModalMode);
                       }
@@ -2000,15 +2466,17 @@ const DashboardPage: NextPageWithLayout = () => {
             <div className="flex justify-end">
               <button
                 type="button"
-                onClick={() => { refreshPoolState(true); refreshUsdcPoolState(true); }}
-                disabled={loading || isRefreshingState || isRefreshingUsdcState}
+                onClick={() => { refreshPoolState(true); refreshUsdcPoolState(true); refreshUsadPoolState(true); }}
+                disabled={loading || isRefreshingState || isRefreshingUsdcState || isRefreshingUsadState}
                 className={`btn btn-sm btn-primary gap-2 text-primary-content border-0 transition-all duration-200 ${
-                  isRefreshingState || isRefreshingUsdcState ? 'cursor-wait opacity-90' : 'hover:opacity-90 active:scale-[0.98]'
+                  isRefreshingState || isRefreshingUsdcState || isRefreshingUsadState
+                    ? 'cursor-wait opacity-90'
+                    : 'hover:opacity-90 active:scale-[0.98]'
                 }`}
-                title={isRefreshingState || isRefreshingUsdcState ? 'Updating pool data…' : 'Reload pool and position data'}
-                aria-busy={isRefreshingState || isRefreshingUsdcState}
+                title={isRefreshingState || isRefreshingUsdcState || isRefreshingUsadState ? 'Updating pool data…' : 'Reload pool and position data'}
+                aria-busy={isRefreshingState || isRefreshingUsdcState || isRefreshingUsadState}
               >
-                {(isRefreshingState || isRefreshingUsdcState) ? (
+                {(isRefreshingState || isRefreshingUsdcState || isRefreshingUsadState) ? (
                   <>
                     <span className="loading loading-spinner loading-sm text-primary-content" />
                     <span className="text-primary-content">Refreshing…</span>
@@ -2110,6 +2578,38 @@ const DashboardPage: NextPageWithLayout = () => {
                           </PrivateActionButton>
                         </td>
                       </tr>
+                      <tr>
+                        <td><span className="font-medium">USADx</span></td>
+                        <td className="text-base-content/90">
+                          {walletBalancesLoading ? (
+                            <span className="loading loading-spinner loading-xs text-base-content/60" />
+                          ) : privateUsadBalance != null ? (
+                            privateUsadBalance.toFixed(4)
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td className="text-base-content">
+                          {walletBalancesLoading ? (
+                            <span className="loading loading-spinner loading-xs text-base-content/60" />
+                          ) : (
+                            (supplyAPYUsad * 100).toFixed(2) + '%'
+                          )}
+                        </td>
+                        <td>
+                          <PrivateActionButton
+                            onClick={() => openActionModal('deposit', 'usad')}
+                            disabled={
+                              loading ||
+                              !connected ||
+                              walletBalancesLoading ||
+                              (privateUsadBalance ?? 0) <= 0
+                            }
+                          >
+                            Supply
+                          </PrivateActionButton>
+                        </td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -2186,6 +2686,31 @@ const DashboardPage: NextPageWithLayout = () => {
                           </PrivateActionButton>
                         </td>
                       </tr>
+                      <tr>
+                        <td><span className="font-medium">USADx</span></td>
+                        <td className="text-base-content/90">
+                          {isRefreshingUsadState ? (
+                            <span className="loading loading-spinner loading-xs text-base-content/60" />
+                          ) : (
+                            availableBorrowUsad.toFixed(4)
+                          )}
+                        </td>
+                        <td className="text-base-content">
+                          {isRefreshingUsadState ? (
+                            <span className="loading loading-spinner loading-xs text-base-content/60" />
+                          ) : (
+                            (borrowAPYUsad * 100).toFixed(2) + '%'
+                          )}
+                        </td>
+                        <td>
+                          <PrivateActionButton
+                            onClick={() => openActionModal('borrow', 'usad')}
+                            disabled={loading || !connected || isRefreshingUsadState || availableBorrowUsad <= 0}
+                          >
+                            Borrow
+                          </PrivateActionButton>
+                        </td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -2226,7 +2751,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         <td>
                           <PrivateActionButton
                             onClick={() => openActionModal('withdraw', 'aleo', supplyBalanceAleo)}
-                            disabled={loading || !connected || walletBalancesLoading || supplyBalanceAleo <= 0}
+                            disabled={loading || !connected || walletBalancesLoading || availableWithdrawAleo <= 0}
                           >
                             Withdraw
                           </PrivateActionButton>
@@ -2254,7 +2779,34 @@ const DashboardPage: NextPageWithLayout = () => {
                         <td>
                           <PrivateActionButton
                             onClick={() => openActionModal('withdraw', 'usdc', supplyBalanceUsdc)}
-                            disabled={loading || !connected || walletBalancesLoading || supplyBalanceUsdc <= 0}
+                            disabled={loading || !connected || walletBalancesLoading || availableWithdrawUsdc <= 0}
+                          >
+                            Withdraw
+                          </PrivateActionButton>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td><span className="font-medium">USADx</span></td>
+                        <td className="text-base-content/90">
+                          {walletBalancesLoading ? (
+                            <span className="loading loading-spinner loading-xs text-base-content/60" />
+                          ) : (
+                            supplyBalanceUsad.toFixed(4)
+                          )}
+                        </td>
+                        <td className="text-base-content">
+                          {walletBalancesLoading ? (
+                            <span className="loading loading-spinner loading-xs text-base-content/60" />
+                          ) : (
+                            <span className="inline-flex items-center">
+                              {(supplyAPYUsad * 100).toFixed(2)}%
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          <PrivateActionButton
+                            onClick={() => openActionModal('withdraw', 'usad', supplyBalanceUsad)}
+                            disabled={loading || !connected || walletBalancesLoading || availableWithdrawUsad <= 0}
                           >
                             Withdraw
                           </PrivateActionButton>
@@ -2335,6 +2887,31 @@ const DashboardPage: NextPageWithLayout = () => {
                           </PrivateActionButton>
                         </td>
                       </tr>
+                      <tr>
+                        <td><span className="font-medium">USADx</span></td>
+                        <td className="text-base-content/90">
+                          {walletBalancesLoading ? (
+                            <span className="loading loading-spinner loading-xs text-base-content/60" />
+                          ) : (
+                            borrowDebtUsad.toFixed(4)
+                          )}
+                        </td>
+                        <td className="text-base-content">
+                          {walletBalancesLoading ? (
+                            <span className="loading loading-spinner loading-xs text-base-content/60" />
+                          ) : (
+                            (borrowAPYUsad * 100).toFixed(2) + '%'
+                          )}
+                        </td>
+                        <td>
+                          <PrivateActionButton
+                            onClick={() => openActionModal('repay', 'usad', borrowDebtUsad)}
+                            disabled={loading || !connected || walletBalancesLoading || borrowDebtUsad <= 0}
+                          >
+                            Repay
+                          </PrivateActionButton>
+                        </td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -2393,7 +2970,15 @@ const DashboardPage: NextPageWithLayout = () => {
                             {new Date(row.created_at).toLocaleString()}
                           </td>
                           <td className="capitalize">{row.type}</td>
-                          <td>{row.asset === 'usdcx' ? 'USDCx' : (row.asset === 'aleo' ? 'ALEO' : String(row.asset).toUpperCase())}</td>
+                          <td>
+                            {row.asset === 'usdcx'
+                              ? 'USDCx'
+                              : row.asset === 'usadx'
+                                ? 'USADx'
+                                : row.asset === 'aleo'
+                                  ? 'ALEO'
+                                  : String(row.asset).toUpperCase()}
+                          </td>
                           <td>
                             {Number(row.amount).toLocaleString(undefined, {
                               minimumFractionDigits: 2,

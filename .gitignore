@@ -5,5 +5,16 @@ node_modules
 *program.json*
 program/build
 program/backup
+programusad/backup
+programusad/build
+programusdc/backup
+programusdc/build
 Docs
 scripts/*.sh
+.cargo-home-34
+.cargo-home-leo
+.cargo-target-34
+.cardgo-target-leo
+.huskey
+.rustup-home-34
+.vscode-test

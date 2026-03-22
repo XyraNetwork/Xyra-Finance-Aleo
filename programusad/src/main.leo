@@ -1,15 +1,15 @@
 // ============================================================
-// lending_pool_usdcx_v16.aleo
+// lending_pool_usad_v16.aleo
 // Same Aave-style lending logic as lending_pool_v91 (credits pool),
-// with USDCx stablecoin transfers: test_usdcx_stablecoin.aleo/transfer_private_to_public
+// with USAD stablecoin transfers: test_usad_stablecoin.aleo/transfer_private_to_public
 // (Token record, amount u64 → u128 at call, [MerkleProof; 2]).
 //
 // MerkleProof must be the imported stablecoin type (not a local struct).
 // ============================================================
 
-import test_usdcx_stablecoin.aleo;
+import test_usad_stablecoin.aleo;
 
-program lending_pool_usdcx_v16.aleo {
+program lending_pool_usad_v16.aleo {
 
     const INDEX_SCALE: u64       = 1_000_000_000_000u64;
     const SCALE: u64             = 10_000u64;
@@ -24,7 +24,7 @@ program lending_pool_usdcx_v16.aleo {
     const RESERVE_FACTOR: u64    = 1_000u64;
     const LTV_FACTOR: u64        = 7_500u64;
 
-    /// UserActivity receipts for this pool (USDCx asset).
+    /// UserActivity receipts for this pool (USAD asset).
     const ASSET_ID: field        = 1field;
 
     mapping total_deposited:     field => u64;
@@ -50,32 +50,30 @@ program lending_pool_usdcx_v16.aleo {
         total_repayments:  u64,
     }
 
-    /// Leo does not allow `constructor() -> Future` / init in constructor on this toolchain.
-    /// Call `initialize()` once after deploy (admin wallet). Seeds mappings via `finalize_initialize`.
-    @admin(address = "aleo1rhgdu77hgyqd3xjj8ucu3jj9r2krwz6mnzyd80gncr5fxcwlh5rsvzp9px")
+    @admin(address = "aleo1a2ehlgqhvs3p7d4hqhs0tvgk954dr8gafu9kxse2mzu9a5sqxvpsrn98pr")
     async constructor() {}
 
     async transition initialize() -> Future {
-        assert(self.caller == aleo1rhgdu77hgyqd3xjj8ucu3jj9r2krwz6mnzyd80gncr5fxcwlh5rsvzp9px);
+        assert(self.caller == aleo1a2ehlgqhvs3p7d4hqhs0tvgk954dr8gafu9kxse2mzu9a5sqxvpsrn98pr);
         return finalize_initialize();
     }
 
     async transition deposit(
-        pay_record:      test_usdcx_stablecoin.aleo/Token,
+        token:          test_usad_stablecoin.aleo/Token,
         public amount:  u64,
         private proofs: [MerkleProof; 2],
-    ) -> (UserActivity, test_usdcx_stablecoin.aleo/ComplianceRecord, test_usdcx_stablecoin.aleo/Token, Future) {
+    ) -> (UserActivity, test_usad_stablecoin.aleo/ComplianceRecord, test_usad_stablecoin.aleo/Token, Future) {
         assert(amount > 0u64);
         let caller: address = self.caller;
-        assert(caller == pay_record.owner);
+        assert(caller == token.owner);
         let user_key: field = BHP256::hash_to_field(caller);
         let amount_u128: u128 = amount as u128;
 
         let (compliance_record, change_token, f_transfer): (
-            test_usdcx_stablecoin.aleo/ComplianceRecord,
-            test_usdcx_stablecoin.aleo/Token,
+            test_usad_stablecoin.aleo/ComplianceRecord,
+            test_usad_stablecoin.aleo/Token,
             Future,
-        ) = test_usdcx_stablecoin.aleo/transfer_private_to_public(POOL_VAULT_ADDRESS, amount_u128, pay_record, proofs);
+        ) = test_usad_stablecoin.aleo/transfer_private_to_public(POOL_VAULT_ADDRESS, amount_u128, token, proofs);
 
         let receipt: UserActivity = UserActivity {
             owner:             caller,
@@ -131,21 +129,21 @@ program lending_pool_usdcx_v16.aleo {
     }
 
     async transition repay(
-        pay_record:      test_usdcx_stablecoin.aleo/Token,
+        token:          test_usad_stablecoin.aleo/Token,
         public amount:  u64,
         private proofs: [MerkleProof; 2],
-    ) -> (UserActivity, test_usdcx_stablecoin.aleo/ComplianceRecord, test_usdcx_stablecoin.aleo/Token, Future) {
+    ) -> (UserActivity, test_usad_stablecoin.aleo/ComplianceRecord, test_usad_stablecoin.aleo/Token, Future) {
         assert(amount > 0u64);
         let caller: address = self.caller;
-        assert(caller == pay_record.owner);
+        assert(caller == token.owner);
         let user_key: field = BHP256::hash_to_field(caller);
         let amount_u128: u128 = amount as u128;
 
         let (compliance_record, change_token, f_transfer): (
-            test_usdcx_stablecoin.aleo/ComplianceRecord,
-            test_usdcx_stablecoin.aleo/Token,
+            test_usad_stablecoin.aleo/ComplianceRecord,
+            test_usad_stablecoin.aleo/Token,
             Future,
-        ) = test_usdcx_stablecoin.aleo/transfer_private_to_public(POOL_VAULT_ADDRESS, amount_u128, pay_record, proofs);
+        ) = test_usad_stablecoin.aleo/transfer_private_to_public(POOL_VAULT_ADDRESS, amount_u128, token, proofs);
 
         let receipt: UserActivity = UserActivity {
             owner:             caller,
