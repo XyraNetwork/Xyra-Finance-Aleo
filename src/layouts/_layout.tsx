@@ -71,7 +71,13 @@ function HeaderInner() {
       <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
         <div className="flex items-center gap-8">
           <Link href="/" className="flex items-center gap-2 shrink-0">
-            <img src="https://www.xyra.network/_next/image?url=%2Fassets%2Flogo.png&w=128&q=75" alt="Xyra Finance" className="h-8 w-auto" />
+            <img
+              src="/xyra-logo.png"
+              alt="Xyra Finance"
+              className="h-8 w-8 object-contain sm:h-9 sm:w-9"
+              width={36}
+              height={36}
+            />
             <span className="font-bold text-lg hidden sm:inline">Xyra</span>
           </Link>
           <div className="flex items-center gap-1">

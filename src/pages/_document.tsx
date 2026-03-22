@@ -50,11 +50,9 @@ class CustomDocument extends Document {
               `,
             }}
           />
-          {/* Favicon for Xyra Finance (external logo URL) */}
-          <link
-            rel="icon"
-            href="https://www.xyra.network/_next/image?url=%2Fassets%2Flogo.png&w=128&q=75"
-          />
+          {/* Brand logo from /public/xyra-logo.png */}
+          <link rel="icon" href="/xyra-logo.png" type="image/png" />
+          <link rel="apple-touch-icon" href="/xyra-logo.png" />
         </Head>
         <body>
           <Main />
