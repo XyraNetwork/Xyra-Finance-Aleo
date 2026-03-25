@@ -618,6 +618,26 @@ const DashboardPage: NextPageWithLayout = () => {
     return msg || 'Unknown error';
   };
 
+  const fetchVaultBalancesHuman = async (): Promise<{ aleo: number; usdcx: number; usad: number } | null> => {
+    try {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+      if (!backendUrl) return null;
+      const resp = await fetch(`${backendUrl}/vault-balances`);
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      const aleo = Number(data?.human?.aleo ?? 0);
+      const usdcx = Number(data?.human?.usdcx ?? 0);
+      const usad = Number(data?.human?.usad ?? 0);
+      return {
+        aleo: Number.isFinite(aleo) ? aleo : 0,
+        usdcx: Number.isFinite(usdcx) ? usdcx : 0,
+        usad: Number.isFinite(usad) ? usad : 0,
+      };
+    } catch {
+      return null;
+    }
+  };
+
   const openActionModal = (
     mode: 'withdraw' | 'deposit' | 'borrow' | 'repay',
     asset: 'aleo' | 'usdc' | 'usad',
@@ -1157,6 +1177,20 @@ const DashboardPage: NextPageWithLayout = () => {
         throw new Error('Amount must be greater than zero.');
       }
 
+      // Vault liquidity check (borrow/withdraw payouts come from backend vault).
+      // Keep existing portfolio/on-chain checks; this is an additional safety gate.
+      if (action === 'borrow' || action === 'withdraw') {
+        const vault = await fetchVaultBalancesHuman();
+        if (vault && amount > (vault.aleo ?? 0)) {
+          const max = Math.max(0, vault.aleo ?? 0);
+          const msg = `Insufficient vault liquidity. You can ${action} at most ${max.toFixed(4)} ALEO right now (vault wallet balance).`;
+          setAmountError(msg);
+          setStatusMessage(msg);
+          setLoading(false);
+          return;
+        }
+      }
+
       // First check for deposit/repay: private Aleo balance must be at least the input amount
       if (action === 'deposit' || action === 'repay') {
         let balance = privateAleoBalance;
@@ -1579,6 +1613,19 @@ const DashboardPage: NextPageWithLayout = () => {
       if (amountUsdc <= 0) {
         throw new Error('Amount must be greater than zero.');
       }
+
+      // Vault liquidity check (USDCx withdrawals/borrows are paid by backend vault).
+      if (action === 'borrow' || action === 'withdraw') {
+        const vault = await fetchVaultBalancesHuman();
+        if (vault && amountUsdc > (vault.usdcx ?? 0)) {
+          const max = Math.max(0, vault.usdcx ?? 0);
+          const msg = `Insufficient vault liquidity. You can ${action} at most ${max.toFixed(4)} USDCx right now (vault wallet balance).`;
+          setAmountErrorUsdc(msg);
+          setStatusMessage(msg);
+          setLoading(false);
+          return;
+        }
+      }
       const amountMicro = Math.round(amountUsdc * 1_000_000);
       const USDC_SCALE = 1_000_000;
       const netSuppliedMicro = (effectiveUserSuppliedUsdc ?? Number(userSuppliedUsdc)) || 0;
@@ -1813,6 +1860,19 @@ const DashboardPage: NextPageWithLayout = () => {
       setAmountErrorUsad(null);
       if (amountUsad <= 0) {
         throw new Error('Amount must be greater than zero.');
+      }
+
+      // Vault liquidity check (USAD withdrawals/borrows are paid by backend vault).
+      if (action === 'borrow' || action === 'withdraw') {
+        const vault = await fetchVaultBalancesHuman();
+        if (vault && amountUsad > (vault.usad ?? 0)) {
+          const max = Math.max(0, vault.usad ?? 0);
+          const msg = `Insufficient vault liquidity. You can ${action} at most ${max.toFixed(4)} USAD right now (vault wallet balance).`;
+          setAmountErrorUsad(msg);
+          setStatusMessage(msg);
+          setLoading(false);
+          return;
+        }
       }
 
       const amountMicro = Math.round(amountUsad * 1_000_000);
@@ -2946,7 +3006,17 @@ const DashboardPage: NextPageWithLayout = () => {
                           : amountErrorUsad}
                     </div>
                   ) : statusMessage ? (
-                    <div className="rounded-lg bg-error/15 border border-error/30 px-4 py-3 text-error text-sm">
+                    <div
+                      className={`rounded-lg px-4 py-3 text-sm ${
+                        statusMessage.includes('at most') ||
+                        statusMessage.includes('liquidity') ||
+                        statusMessage.includes('Failed') ||
+                        statusMessage.includes('Insufficient') ||
+                        statusMessage.includes('free for withdrawal')
+                          ? 'bg-error/15 border border-error/30 text-error'
+                          : 'text-base-content/70'
+                      }`}
+                    >
                       {statusMessage}
                     </div>
                   ) : null}
@@ -2999,7 +3069,17 @@ const DashboardPage: NextPageWithLayout = () => {
                   ) : (
                     <>
                       {statusMessage && !txFinalized ? (
-                        <div className="rounded-lg bg-error/15 border border-error/30 px-4 py-3 text-error text-sm text-center w-full">
+                        <div
+                          className={`rounded-lg px-4 py-3 text-sm text-center w-full ${
+                            statusMessage.includes('at most') ||
+                            statusMessage.includes('liquidity') ||
+                            statusMessage.includes('Failed') ||
+                            statusMessage.includes('Insufficient') ||
+                            statusMessage.includes('free for withdrawal')
+                              ? 'bg-error/15 border border-error/30 text-error'
+                              : 'text-base-content/70'
+                          }`}
+                        >
                           {statusMessage}
                         </div>
                       ) : null}
@@ -3108,12 +3188,12 @@ const DashboardPage: NextPageWithLayout = () => {
                   <div className="font-semibold">${totalCollateralUsd.toFixed(2)}</div>
                 </div>
                 <div>
-                  <div className="text-base-content/60">Total debt</div>
-                  <div className="font-semibold">${totalDebtUsd.toFixed(2)}</div>
-                </div>
-                <div>
                   <div className="text-base-content/60">Borrowable (est.)</div>
                   <div className="font-semibold">${borrowableUsd.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-base-content/60">Total debt</div>
+                  <div className="font-semibold">${totalDebtUsd.toFixed(2)}</div>
                 </div>
                 <div>
                   <div className="text-base-content/60">Health factor</div>
@@ -3122,14 +3202,6 @@ const DashboardPage: NextPageWithLayout = () => {
                   </div>
                 </div>
               </div>
-              <p className="text-xs text-base-content/60 mt-2">
-                Portfolio estimates use on-chain `asset_price` from `xyra_lending_v2.aleo` when available, with env fallback
-                (`NEXT_PUBLIC_ALEO_PRICE_USD`, `NEXT_PUBLIC_USDCX_PRICE_USD`, `NEXT_PUBLIC_USAD_PRICE_USD`).
-                Final borrow/withdraw checks are enforced on-chain by `xyra_lending_v2.aleo`.
-              </p>
-              <p className="text-xs text-base-content/60 mt-1">
-                Prices in use — ALEO: ${ALEO_PRICE_USD.toFixed(4)} ({ALEO_PRICE_SOURCE}), USDCx: ${USDCX_PRICE_USD.toFixed(4)} ({USDCX_PRICE_SOURCE}), USAD: ${USAD_PRICE_USD.toFixed(4)} ({USAD_PRICE_SOURCE})
-              </p>
             </div>
 
             <div className="grid gap-6 md:grid-cols-2">
@@ -3359,10 +3431,6 @@ const DashboardPage: NextPageWithLayout = () => {
                     </tbody>
                   </table>
                 </div>
-                <p className="text-xs text-base-content/60">
-                  Borrowable is one shared portfolio USD headroom. For each asset, UI shows the same headroom converted to that
-                  asset. Final validation is enforced on-chain.
-                </p>
               </div>
               {/* Your supplies */}
               <div className="rounded-xl bg-base-200 p-5 space-y-4 border border-base-300">

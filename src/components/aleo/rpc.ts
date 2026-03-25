@@ -3003,7 +3003,9 @@ export async function getAssetPriceForProgram(
     });
     const raw = res?.value ?? res ?? null;
     if (raw == null) return null;
-    const num = Number(String(raw).replace(/u64$/i, ''));
+    const s = String(raw).trim();
+    const m = s.match(/(\d[\d_]*)/);
+    const num = m ? Number(m[1].replace(/_/g, '')) : Number.NaN;
     return Number.isFinite(num) ? num : null;
   } catch {
     return null;

@@ -8,6 +8,10 @@ import {
   computeAleoPoolAPY,
   computeUsdcPoolAPY,
   computeUsadPoolAPY,
+  getAssetPriceForProgram,
+  LENDING_POOL_PROGRAM_ID,
+  USDC_LENDING_POOL_PROGRAM_ID,
+  USAD_LENDING_POOL_PROGRAM_ID,
 } from '@/components/aleo/rpc';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 
@@ -28,6 +32,15 @@ export function MarketsView() {
   const [usadTotalBorrowed, setUsadTotalBorrowed] = useState<number>(0);
   const [usadSupplyAPY, setUsadSupplyAPY] = useState<number>(0);
   const [usadBorrowAPY, setUsadBorrowAPY] = useState<number>(0);
+
+  const [vaultLoading, setVaultLoading] = useState<boolean>(true);
+  const [vaultAleoBalance, setVaultAleoBalance] = useState<number>(0);
+  const [vaultUsdcxBalance, setVaultUsdcxBalance] = useState<number>(0);
+  const [vaultUsadBalance, setVaultUsadBalance] = useState<number>(0);
+  const [vaultPricesLoading, setVaultPricesLoading] = useState<boolean>(true);
+  const [priceUsdAleo, setPriceUsdAleo] = useState<number | null>(null);
+  const [priceUsdUsdcx, setPriceUsdUsdcx] = useState<number | null>(null);
+  const [priceUsdUsad, setPriceUsdUsad] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,8 +92,61 @@ export function MarketsView() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    setVaultLoading(true);
+    setVaultPricesLoading(true);
+
+    (async () => {
+      try {
+        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+        if (!backendUrl) throw new Error('NEXT_PUBLIC_BACKEND_URL missing');
+
+        const [resp, pA, pU, pD] = await Promise.all([
+          fetch(`${backendUrl}/vault-balances`),
+          getAssetPriceForProgram(LENDING_POOL_PROGRAM_ID, '0field'),
+          getAssetPriceForProgram(USDC_LENDING_POOL_PROGRAM_ID, '1field'),
+          getAssetPriceForProgram(USAD_LENDING_POOL_PROGRAM_ID, '2field'),
+        ]);
+        if (!resp.ok) throw new Error(`vault-balances HTTP ${resp.status}`);
+        const data = await resp.json();
+
+        const aleo = Number(data?.human?.aleo ?? '0');
+        const usdcx = Number(data?.human?.usdcx ?? '0');
+        const usad = Number(data?.human?.usad ?? '0');
+
+        if (cancelled) return;
+        setVaultAleoBalance(Number.isFinite(aleo) ? aleo : 0);
+        setVaultUsdcxBalance(Number.isFinite(usdcx) ? usdcx : 0);
+        setVaultUsadBalance(Number.isFinite(usad) ? usad : 0);
+
+        // Prices are in PRICE_SCALE units (1e6 => $1.000000)
+        const toUsd = (raw: number | null) => (raw == null ? null : raw / 1_000_000);
+        setPriceUsdAleo(toUsd(pA));
+        setPriceUsdUsdcx(toUsd(pU));
+        setPriceUsdUsad(toUsd(pD));
+      } catch (e) {
+        console.warn('Markets: failed to fetch vault balances:', e);
+      } finally {
+        if (!cancelled) {
+          setVaultLoading(false);
+          setVaultPricesLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const aleoAvailable = Math.max(0, aleoTotalSupplied - aleoTotalBorrowed);
   const usdcAvailable = Math.max(0, usdcTotalSupplied - usdcTotalBorrowed);
+  const fmtVault = (bal: number, priceUsd: number | null) => {
+    if (vaultLoading || vaultPricesLoading) return '—';
+    const usd = priceUsd == null ? null : bal * priceUsd;
+    return usd == null ? bal.toFixed(4) : `${bal.toFixed(4)} (~$${usd.toFixed(2)})`;
+  };
 
   return (
     <div className="flex justify-center pt-16 sm:pt-20">
@@ -116,7 +182,7 @@ export function MarketsView() {
               ) : null}
             </h2>
             <p className="text-xs text-base-content/70 mt-0.5">
-              Supply and borrow APY, total supplied, total borrowed, and available liquidity.
+              Supply and borrow APY, total supplied, total borrowed, available liquidity, and vault wallet balance.
             </p>
           </div>
           {loading ? (
@@ -132,6 +198,10 @@ export function MarketsView() {
                     <th className="bg-base-300/50 font-semibold">Total supplied</th>
                     <th className="bg-base-300/50 font-semibold">Total borrowed</th>
                     <th className="bg-base-300/50 font-semibold">Available</th>
+                    <th className="bg-base-300/50 font-semibold">
+                      Vault balance
+                      <InfoTooltip tip="Backend vault wallet public balance for this asset (from token program mappings). Not pool liquidity." />
+                    </th>
                     <th className="bg-base-300/50 font-semibold">
                       Supply APY
                       <InfoTooltip
@@ -154,6 +224,7 @@ export function MarketsView() {
                     <td>{aleoTotalSupplied.toFixed(4)}</td>
                     <td>{aleoTotalBorrowed.toFixed(4)}</td>
                     <td>{aleoAvailable.toFixed(4)}</td>
+                    <td>{fmtVault(vaultAleoBalance, priceUsdAleo)}</td>
                     <td className="text-success">{aleoSupplyAPY.toFixed(2)}%</td>
                     <td className="text-warning">{aleoBorrowAPY.toFixed(2)}%</td>
                   </tr>
@@ -164,6 +235,7 @@ export function MarketsView() {
                     <td>{usdcTotalSupplied.toFixed(4)}</td>
                     <td>{usdcTotalBorrowed.toFixed(4)}</td>
                     <td>{usdcAvailable.toFixed(4)}</td>
+                    <td>{fmtVault(vaultUsdcxBalance, priceUsdUsdcx)}</td>
                     <td className="text-success">{usdcSupplyAPY.toFixed(2)}%</td>
                     <td className="text-warning">{usdcBorrowAPY.toFixed(2)}%</td>
                   </tr>
@@ -174,6 +246,7 @@ export function MarketsView() {
                     <td>{usadTotalSupplied.toFixed(4)}</td>
                     <td>{usadTotalBorrowed.toFixed(4)}</td>
                     <td>{Math.max(0, usadTotalSupplied - usadTotalBorrowed).toFixed(4)}</td>
+                    <td>{fmtVault(vaultUsadBalance, priceUsdUsad)}</td>
                     <td className="text-success">{usadSupplyAPY.toFixed(2)}%</td>
                     <td className="text-warning">{usadBorrowAPY.toFixed(2)}%</td>
                   </tr>
