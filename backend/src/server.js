@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
+import { AleoNetworkClient } from '@provablehq/sdk';
 import {
   runWithdrawal,
   runBorrow,
@@ -16,6 +17,105 @@ import { startVaultWatcher } from './vaultWatcher.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+const ALEO_RPC_URL = process.env.ALEO_RPC_URL || 'https://api.explorer.provable.com/v1';
+
+const CREDITS_PROGRAM_ID = 'credits.aleo';
+const USDC_TOKEN_PROGRAM_ID = process.env.USDC_TOKEN_PROGRAM_ID || 'test_usdcx_stablecoin.aleo';
+const USAD_TOKEN_PROGRAM_ID = process.env.USAD_TOKEN_PROGRAM_ID || 'test_usad_stablecoin.aleo';
+
+const DECIMALS_6 = 1_000_000n; // stablecoins/base units in this project
+
+let vaultBalancesCache = {
+  ts: 0,
+  value: null,
+};
+
+function parseLeoUint(raw) {
+  if (raw == null) return 0n;
+  const s = String(raw);
+  const m = s.match(/(\d[\d_]*)/);
+  if (!m) return 0n;
+  try {
+    return BigInt(m[1].replace(/_/g, ''));
+  } catch {
+    return 0n;
+  }
+}
+
+function toFixedFromMicro(raw, decimals = 6) {
+  const div = BigInt(10) ** BigInt(decimals);
+  const intPart = raw / div;
+  const fracPart = raw % div;
+  const frac = fracPart.toString().padStart(decimals, '0');
+  // trim trailing zeros for nicer UI strings
+  const trimmed = frac.replace(/0+$/, '');
+  return trimmed.length ? `${intPart.toString()}.${trimmed}` : intPart.toString();
+}
+
+async function pickLikelyBalanceMappingName(networkClient, programId) {
+  const mappingNames = await networkClient.getProgramMappingNames(programId);
+  const norm = (x) => String(x || '').toLowerCase();
+
+  const candidates = ['account', 'accounts', 'balance', 'balances'];
+  for (const c of candidates) {
+    const hit = (mappingNames || []).find((m) => norm(m) === c || norm(m).includes(c));
+    if (hit) return String(hit);
+  }
+
+  // Fallback: first mapping name if present.
+  if (mappingNames && mappingNames.length > 0) return String(mappingNames[0]);
+  return null;
+}
+
+async function getVaultPublicBalances() {
+  const VAULT_ADDRESS = process.env.VAULT_ADDRESS;
+  if (!VAULT_ADDRESS) throw new Error('VAULT_ADDRESS missing in backend/.env');
+
+  const networkClient = new AleoNetworkClient(ALEO_RPC_URL);
+
+  const readBalance = async (programId, mappingName) => {
+    if (!mappingName) return 0n;
+    // SDK method name is `getProgramMappingValue(programId, mappingName, key)`
+    const raw = await networkClient.getProgramMappingValue(programId, mappingName, VAULT_ADDRESS);
+    return parseLeoUint(raw);
+  };
+
+  const [creditsMap, usdcxMap, usadMap] = await Promise.all([
+    pickLikelyBalanceMappingName(networkClient, CREDITS_PROGRAM_ID),
+    pickLikelyBalanceMappingName(networkClient, USDC_TOKEN_PROGRAM_ID),
+    pickLikelyBalanceMappingName(networkClient, USAD_TOKEN_PROGRAM_ID),
+  ]);
+
+  const [creditsRaw, usdcxRaw, usadRaw] = await Promise.all([
+    readBalance(CREDITS_PROGRAM_ID, creditsMap),
+    readBalance(USDC_TOKEN_PROGRAM_ID, usdcxMap),
+    readBalance(USAD_TOKEN_PROGRAM_ID, usadMap),
+  ]);
+
+  return {
+    vaultAddress: VAULT_ADDRESS,
+    tokenPrograms: {
+      credits: CREDITS_PROGRAM_ID,
+      usdcx: USDC_TOKEN_PROGRAM_ID,
+      usad: USAD_TOKEN_PROGRAM_ID,
+    },
+    mappingNames: {
+      credits: creditsMap,
+      usdcx: usdcxMap,
+      usad: usadMap,
+    },
+    balances: {
+      aleoCreditsMicro: creditsRaw.toString(), // u64 microcredits
+      usdcxBaseUnits: usdcxRaw.toString(), // u128 base units (6 decimals)
+      usadBaseUnits: usadRaw.toString(), // u128 base units (6 decimals)
+    },
+    human: {
+      aleo: toFixedFromMicro(creditsRaw, 6),
+      usdcx: toFixedFromMicro(usdcxRaw, 6),
+      usad: toFixedFromMicro(usadRaw, 6),
+    },
+  };
+}
 
 // In-process queue for vault operations: one at a time to avoid RPC overload and vault key contention.
 // Set VAULT_QUEUE_CONCURRENCY to 2 or 3 if your RPC supports limited parallelism (default 1).
@@ -440,6 +540,25 @@ app.post('/record-transaction', async (req, res) => {
   } catch (err) {
     console.error('❌ /record-transaction failed:', err);
     return res.status(500).json({ error: err?.message || 'Internal server error' });
+  }
+});
+
+// Public endpoint: backend vault wallet balances (credits.aleo + stablecoin public mappings)
+// This lets the frontend show "wallet balances" without decrypting private token records.
+app.get('/vault-balances', async (_req, res) => {
+  try {
+    const now = Date.now();
+    const ttlMs = Number(process.env.VAULT_BALANCES_CACHE_TTL_MS || '15000'); // 15s default
+    if (vaultBalancesCache.value && now - vaultBalancesCache.ts < ttlMs) {
+      return res.json({ ok: true, cached: true, ...vaultBalancesCache.value });
+    }
+
+    const value = await getVaultPublicBalances();
+    vaultBalancesCache = { ts: now, value };
+    return res.json({ ok: true, cached: false, ...value });
+  } catch (err) {
+    console.error('❌ /vault-balances failed:', err);
+    return res.status(500).json({ ok: false, error: err?.message || 'Failed to fetch vault balances' });
   }
 });
 
