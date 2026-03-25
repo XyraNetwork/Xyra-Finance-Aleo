@@ -14,6 +14,7 @@ import {
 import { logTestnetStatus } from './checkTestnet.js';
 import { updateVaultTx, setVaultStatus, insertTransactionRecord } from './supabase.js';
 import { startVaultWatcher } from './vaultWatcher.js';
+import { startAleoPricePoller } from './aleoPricePoller.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -571,5 +572,6 @@ app.listen(PORT, async () => {
   } else {
     console.log('   Vault watcher: disabled (VAULT_WATCHER_ENABLED=false)');
   }
+  startAleoPricePoller();
 });
 
