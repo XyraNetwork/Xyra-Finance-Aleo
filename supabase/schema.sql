@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS transaction_history (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   wallet_address TEXT NOT NULL,
   tx_id TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('deposit', 'withdraw', 'borrow', 'repay')),
+  type TEXT NOT NULL CHECK (type IN ('deposit', 'withdraw', 'borrow', 'repay', 'flash_loan')),
   asset TEXT NOT NULL CHECK (asset IN ('aleo', 'usdcx', 'usad')),
   amount NUMERIC(20, 6) NOT NULL,
   program_id TEXT,

@@ -712,31 +712,7 @@ export async function lendingBorrow(
     const amountMicro = Math.round(amount * 1_000_000);
     const inputs = [`${amountMicro}u64`];
 
-    // Check pool liquidity (same logic as before)
-    try {
-      const poolState = await getLendingPoolState();
-      const totalSuppliedMicro = poolState.totalSupplied ? Number(poolState.totalSupplied) : 0;
-      const totalBorrowedMicro = poolState.totalBorrowed ? Number(poolState.totalBorrowed) : 0;
-      const availableLiquidityCredits = Math.max(
-        0,
-        (totalSuppliedMicro - totalBorrowedMicro) / 1_000_000,
-      );
-
-      if (totalSuppliedMicro === 0) {
-        throw new Error('Cannot borrow: No liquidity in the pool. Please deposit first.');
-      }
-
-      if (amount > availableLiquidityCredits) {
-        throw new Error(
-          `Cannot borrow: Insufficient liquidity. Available: ${availableLiquidityCredits}, Requested: ${amount}`,
-        );
-      }
-    } catch (error: any) {
-      if (error.message.includes('Cannot borrow')) {
-        throw error;
-      }
-      console.warn('Pool state check failed:', error);
-    }
+    // No frontend liquidity hard-block: program handles cross-collateral eligibility on-chain.
 
     console.log('🔍 Calling executeTransaction for borrow (public fee)...');
     const result = await executeTransaction({
@@ -943,6 +919,160 @@ export async function lendingRepay(
     }
 
     throw new Error(`Repay transaction failed: ${error?.message || 'Unknown error'}`);
+  }
+}
+
+/** Same as pool `FLASH_PREMIUM_BPS` (0.05% of principal). */
+export const ALEO_FLASH_PREMIUM_BPS = 5;
+export const BPS_DENOMINATOR = 10_000;
+
+/** Ceil(principal_micro * BPS / DENOM) — matches `flash_loan_with_credits` on-chain. */
+export function aleoFlashFeeMicro(principalMicro: number): number {
+  return Math.floor(
+    (principalMicro * ALEO_FLASH_PREMIUM_BPS + BPS_DENOMINATOR - 1) / BPS_DENOMINATOR,
+  );
+}
+
+/**
+ * Flash loan (ALEO pool): `flash_loan_with_credits` — pay principal + fee to vault in one tx;
+ * backend sends principal to your wallet (same as borrow).
+ */
+export async function lendingFlashLoan(
+  executeTransaction: ((tx: any) => Promise<any>) | undefined,
+  amount: number,
+  publicKey?: string,
+  requestRecords?: (program: string, includeSpent?: boolean) => Promise<any[]>,
+  decrypt?: (cipherText: string) => Promise<string>,
+): Promise<string> {
+  if (!executeTransaction) {
+    throw new Error('executeTransaction is not available from the connected wallet.');
+  }
+  if (!publicKey || !requestRecords) {
+    throw new Error('Wallet not connected or record access (requestRecords) unavailable for flash loan.');
+  }
+  if (amount <= 0) {
+    throw new Error('Flash loan amount must be greater than 0');
+  }
+
+  try {
+    const principalMicro = Math.round(amount * 1_000_000);
+    const feeMicro = aleoFlashFeeMicro(principalMicro);
+    const totalMicro = principalMicro + feeMicro;
+
+    console.log('🔍 Fetching credits.aleo records for flash_loan...', {
+      CREDITS_PROGRAM_ID,
+      principalMicro,
+      feeMicro,
+      totalMicro,
+    });
+
+    let records = await requestRecords(CREDITS_PROGRAM_ID, false);
+    if (!records || !Array.isArray(records)) records = [];
+
+    const getMicrocredits = (record: any): number => {
+      try {
+        if (record.data && record.data.microcredits) {
+          return parseInt(String(record.data.microcredits).replace('u64', ''), 10);
+        }
+        if (record.plaintext) {
+          const match = String(record.plaintext).match(/microcredits:\s*([\d_]+)u64/);
+          if (match && match[1]) {
+            return parseInt(match[1].replace(/_/g, ''), 10);
+          }
+        }
+      } catch {
+        // ignore
+      }
+      return 0;
+    };
+
+    const processRecord = async (r: any): Promise<number> => {
+      let val = getMicrocredits(r);
+      if (val === 0 && r.recordCiphertext && !r.plaintext && decrypt) {
+        try {
+          const decrypted = await decrypt(r.recordCiphertext);
+          if (decrypted) {
+            r.plaintext = decrypted;
+            val = getMicrocredits(r);
+          }
+        } catch (e) {
+          console.warn('⚠️ Failed to decrypt credits record for flash loan:', e);
+        }
+      }
+      return val;
+    };
+
+    let payRecord: any | null = null;
+    for (const r of records as any[]) {
+      if (r.spent) continue;
+      const val = await processRecord(r);
+      const isSpendable = !!(r.plaintext || r.nonce || r._nonce || r.data?._nonce || r.ciphertext);
+      if (isSpendable && val >= totalMicro) {
+        payRecord = r;
+        break;
+      }
+    }
+
+    if (!payRecord) {
+      throw new Error(
+        `No credits.aleo record covers principal + flash fee (${amount} + fee). Need one record with at least ${(totalMicro / 1_000_000).toFixed(6)} ALEO.`,
+      );
+    }
+
+    let recordInput: string | any = payRecord.plaintext;
+    if (!recordInput) {
+      const nonce = payRecord.nonce || payRecord._nonce || payRecord.data?._nonce;
+      const micro = getMicrocredits(payRecord);
+      const owner = payRecord.owner;
+      if (nonce && micro > 0 && owner) {
+        recordInput = `{ owner: ${owner}.private, microcredits: ${micro}u64.private, _nonce: ${nonce}.public }`;
+      } else if (payRecord.ciphertext || payRecord.recordCiphertext) {
+        recordInput = payRecord.ciphertext || payRecord.recordCiphertext;
+      } else {
+        recordInput = payRecord;
+      }
+    }
+
+    const amountInput = `${principalMicro}u64`;
+    const inputs: any[] = [recordInput, amountInput];
+
+    console.log('🔍 Calling executeTransaction for flash_loan_with_credits...', {
+      program: LENDING_POOL_PROGRAM_ID,
+      function: 'flash_loan_with_credits',
+      inputsPreview: { input1: amountInput },
+    });
+
+    const result = await executeTransaction({
+      program: LENDING_POOL_PROGRAM_ID,
+      function: 'flash_loan_with_credits',
+      inputs,
+      fee: DEFAULT_LENDING_FEE * 1_000_000,
+      privateFee: false,
+      recordIndices: [0],
+    });
+
+    const tempId: string | undefined = result?.transactionId;
+    if (!tempId) {
+      throw new Error('Flash loan failed: No temporary transactionId returned from wallet.');
+    }
+    console.log('Temporary Transaction ID (flash_loan_with_credits):', tempId);
+    return tempId;
+  } catch (error: any) {
+    console.error('❌ FLASH LOAN FAILED:', error);
+    const rawMsg = String(error?.message || error || '').toLowerCase();
+    const isCancelled =
+      rawMsg.includes('operation was cancelled by the user') ||
+      rawMsg.includes('operation was canceled by the user') ||
+      rawMsg.includes('user cancelled') ||
+      rawMsg.includes('user canceled') ||
+      rawMsg.includes('user rejected') ||
+      rawMsg.includes('rejected by user') ||
+      rawMsg.includes('transaction cancelled by user');
+    if (isCancelled) {
+      console.warn('💡 Flash loan cancelled by user (handled gracefully).');
+      return '__CANCELLED__';
+    }
+    throw new Error(`Flash loan failed: ${error?.message || 'Unknown error'}`);
   }
 }
 
@@ -2158,7 +2288,7 @@ function handleUsadTxError(error: any, action: string): string {
 }
 
 /**
- * USAD deposit: lending_pool_usad_v17.aleo/deposit(token, amount, proofs) — 3 inputs.
+ * USAD deposit: xyra_lending_v2.aleo/deposit_usad(token, amount, proofs) — 3 inputs.
  * Amount in human USAD; converted to micro-USAD for the program.
  *
  * @param ownerAddress - Connected wallet `aleo1…` address. Used to build Sealance / Veiled Markets–style
@@ -2193,7 +2323,7 @@ export async function lendingDepositUsad(
           poolProgram: USAD_LENDING_POOL_PROGRAM_ID,
           envPoolProgram: process.env.NEXT_PUBLIC_USAD_LENDING_POOL_PROGRAM_ID ?? '(unset)',
           tokenProgram: USAD_TOKEN_PROGRAM,
-          function: 'deposit',
+          function: 'deposit_usad',
           amountHuman: amount,
           amountMicro,
           feeMicrocredits: feeMicro,
@@ -2210,7 +2340,7 @@ export async function lendingDepositUsad(
 
     const result = await executeTransaction({
       program: USAD_LENDING_POOL_PROGRAM_ID,
-      function: 'deposit',
+      function: 'deposit_usad',
       inputs,
       fee: feeMicro,
       privateFee: false,
@@ -2226,7 +2356,7 @@ export async function lendingDepositUsad(
 }
 
 /**
- * USAD repay: lending_pool_usad_v17.aleo/repay(token, amount, proofs) — 3 inputs.
+ * USAD repay: xyra_lending_v2.aleo/repay_usad(token, amount, proofs) — 3 inputs.
  * Amount in human USAD; converted to micro-USAD for the program.
  *
  * @param ownerAddress - Connected wallet address for Sealance / Veiled-style Merkle proofs (see deposit).
@@ -2260,7 +2390,7 @@ export async function lendingRepayUsad(
           poolProgram: USAD_LENDING_POOL_PROGRAM_ID,
           envPoolProgram: process.env.NEXT_PUBLIC_USAD_LENDING_POOL_PROGRAM_ID ?? '(unset)',
           tokenProgram: USAD_TOKEN_PROGRAM,
-          function: 'repay',
+          function: 'repay_usad',
           amountHuman: amount,
           amountMicro,
           feeMicrocredits: feeMicro,
@@ -2283,7 +2413,7 @@ export async function lendingRepayUsad(
 
     const result = await executeTransaction({
       program: USAD_LENDING_POOL_PROGRAM_ID,
-      function: 'repay',
+      function: 'repay_usad',
       inputs,
       fee: feeMicro,
       privateFee: false,
@@ -2312,7 +2442,7 @@ export async function lendingWithdrawUsad(
     const inputs = [`${amountMicro}u64`];
     const result = await executeTransaction({
       program: USAD_LENDING_POOL_PROGRAM_ID,
-      function: 'withdraw',
+      function: 'withdraw_usad',
       inputs,
       fee: DEFAULT_LENDING_FEE * 1_000_000,
       privateFee: false,
@@ -2339,7 +2469,7 @@ export async function lendingBorrowUsad(
     const inputs = [`${amountMicro}u64`];
     const result = await executeTransaction({
       program: USAD_LENDING_POOL_PROGRAM_ID,
-      function: 'borrow',
+      function: 'borrow_usad',
       inputs,
       fee: DEFAULT_LENDING_FEE * 1_000_000,
       privateFee: false,
@@ -2353,7 +2483,7 @@ export async function lendingBorrowUsad(
 }
 
 /**
- * USDC deposit: pool program /deposit (e.g. lending_pool_usdcx_v18.aleo) — token, amount, proofs — 3 inputs.
+ * USDC deposit: xyra_lending_v2.aleo/deposit_usdcx — token, amount, proofs — 3 inputs.
  * Amount in human USDC; converted to micro-USDC for the program.
  */
 export async function lendingDepositUsdc(
@@ -2384,7 +2514,7 @@ export async function lendingDepositUsdc(
           poolProgram: USDC_LENDING_POOL_PROGRAM_ID,
           envPoolProgram: process.env.NEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID ?? '(unset)',
           tokenProgram: USDC_TOKEN_PROGRAM,
-          function: 'deposit',
+          function: 'deposit_usdcx',
           amountHuman: amount,
           amountMicro,
           feeMicrocredits: feeMicro,
@@ -2403,7 +2533,7 @@ export async function lendingDepositUsdc(
 
     const result = await executeTransaction({
       program: USDC_LENDING_POOL_PROGRAM_ID,
-      function: 'deposit',
+      function: 'deposit_usdcx',
       inputs,
       fee: feeMicro,
       privateFee: false,
@@ -2419,7 +2549,7 @@ export async function lendingDepositUsdc(
 }
 
 /**
- * USDC repay: pool program /repay — 3 inputs.
+ * USDC repay: xyra_lending_v2.aleo/repay_usdcx — 3 inputs.
  * Amount in human USDC; converted to micro-USDC for the program.
  */
 export async function lendingRepayUsdc(
@@ -2450,7 +2580,7 @@ export async function lendingRepayUsdc(
           poolProgram: USDC_LENDING_POOL_PROGRAM_ID,
           envPoolProgram: process.env.NEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID ?? '(unset)',
           tokenProgram: USDC_TOKEN_PROGRAM,
-          function: 'repay',
+          function: 'repay_usdcx',
           amountHuman: amount,
           amountMicro,
           feeMicrocredits: feeMicro,
@@ -2474,7 +2604,7 @@ export async function lendingRepayUsdc(
 
     const result = await executeTransaction({
       program: USDC_LENDING_POOL_PROGRAM_ID,
-      function: 'repay',
+      function: 'repay_usdcx',
       inputs,
       fee: feeMicro,
       privateFee: false,
@@ -2500,7 +2630,7 @@ export async function lendingWithdrawUsdc(
     const inputs = [`${amountMicro}u64`];
     const result = await executeTransaction({
       program: USDC_LENDING_POOL_PROGRAM_ID,
-      function: 'withdraw',
+      function: 'withdraw_usdcx',
       inputs,
       fee: DEFAULT_LENDING_FEE * 1_000_000,
       privateFee: false,
@@ -2524,7 +2654,7 @@ export async function lendingBorrowUsdc(
     const inputs = [`${amountMicro}u64`];
     const result = await executeTransaction({
       program: USDC_LENDING_POOL_PROGRAM_ID,
-      function: 'borrow',
+      function: 'borrow_usdcx',
       inputs,
       fee: DEFAULT_LENDING_FEE * 1_000_000,
       privateFee: false,
@@ -2638,7 +2768,7 @@ export async function lendingAccrueInterest(
   const fee = DEFAULT_LENDING_FEE * 1_000_000;
 
   try {
-    const inputs: string[] = [];
+    const inputs: string[] = ['0field'];
     console.log('💰 Transaction Configuration:', {
       inputs,
       fee: `${fee} microcredits`,
@@ -2704,7 +2834,7 @@ export async function lendingAccrueInterestUsdc(
     const result = await executeTransaction({
       program: USDC_LENDING_POOL_PROGRAM_ID,
       function: 'accrue_interest',
-      inputs: [],
+      inputs: ['1field'],
       fee,
       privateFee: false,
     });
@@ -2733,7 +2863,7 @@ export async function lendingAccrueInterestUsad(
     const result = await executeTransaction({
       program: USAD_LENDING_POOL_PROGRAM_ID,
       function: 'accrue_interest',
-      inputs: [],
+      inputs: ['2field'],
       fee,
       privateFee: false,
     });
@@ -2756,7 +2886,7 @@ export async function lendingAccrueInterestUsad(
  * Keys are always GLOBAL_KEY = 0u8 in the Leo program.
  * v85 (lending_pool_v85.aleo) also has liquidity_index and borrow_index for interest/APY.
  */
-export async function getLendingPoolStateForProgram(programId: string): Promise<{
+export async function getLendingPoolStateForProgram(programId: string, assetKey: string = '0field'): Promise<{
   totalSupplied: string | null;
   totalBorrowed: string | null;
   utilizationIndex: string | null;
@@ -2794,7 +2924,7 @@ export async function getLendingPoolStateForProgram(programId: string): Promise<
     // key type: field (single-asset key = 0field)
     // mappings: total_deposited, total_borrowed, supply_index, borrow_index, ...
     // -----------------------------
-    const keyField = '0field';
+    const keyField = assetKey;
     const [depositedV91, borrowedV91, supplyIdxV91, borrowIdxV91] = await Promise.all([
       requestWithErrorHandling('total_deposited', keyField),
       requestWithErrorHandling('total_borrowed', keyField),
@@ -2858,6 +2988,29 @@ export async function getLendingPoolStateForProgram(programId: string): Promise<
 }
 
 /**
+ * Read V2 oracle price mapping for an asset key (e.g. 0field/1field/2field).
+ * Returns price in program PRICE_SCALE units (1e6 => $1.000000).
+ */
+export async function getAssetPriceForProgram(
+  programId: string,
+  assetKey: string,
+): Promise<number | null> {
+  try {
+    const res = await client.request('getMappingValue', {
+      program_id: programId,
+      mapping_name: 'asset_price',
+      key: assetKey,
+    });
+    const raw = res?.value ?? res ?? null;
+    if (raw == null) return null;
+    const num = Number(String(raw).replace(/u64$/i, ''));
+    return Number.isFinite(num) ? num : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read global pool state for the Aleo pool (lending_pool_v86.aleo).
  */
 export async function getLendingPoolState(): Promise<{
@@ -2868,7 +3021,7 @@ export async function getLendingPoolState(): Promise<{
   liquidityIndex: string | null;
   borrowIndex: string | null;
 }> {
-  return getLendingPoolStateForProgram(LENDING_POOL_PROGRAM_ID);
+  return getLendingPoolStateForProgram(LENDING_POOL_PROGRAM_ID, '0field');
 }
 
 /**
@@ -2882,7 +3035,7 @@ export async function getUsdcLendingPoolState(): Promise<{
   liquidityIndex: string | null;
   borrowIndex: string | null;
 }> {
-  return getLendingPoolStateForProgram(USDC_LENDING_POOL_PROGRAM_ID);
+  return getLendingPoolStateForProgram(USDC_LENDING_POOL_PROGRAM_ID, '1field');
 }
 
 /**
@@ -2896,7 +3049,7 @@ export async function getUsadLendingPoolState(): Promise<{
   liquidityIndex: string | null;
   borrowIndex: string | null;
 }> {
-  return getLendingPoolStateForProgram(USAD_LENDING_POOL_PROGRAM_ID);
+  return getLendingPoolStateForProgram(USAD_LENDING_POOL_PROGRAM_ID, '2field');
 }
 
 // --- v91 interest/APY constants (match program lending_pool_v91.aleo) ---
@@ -2954,17 +3107,93 @@ export const computeUsdcPoolAPY = computeAleoPoolAPY;
 /** Same rate model as Aleo pool (v86); USAD pool uses identical constants. */
 export const computeUsadPoolAPY = computeAleoPoolAPY;
 
+// These caches are module-level and can survive HMR in development.
+// Version them so changes to key-derivation logic don't leave stale entries.
+const USER_FIELD_HASH_SCHEME_VERSION = 'v2';
+const userFieldHashCache = new Map<string, string>();
+const lendingPositionKeyCache = new Map<string, string>();
+
+function normalizeFieldLiteral(fieldStr: string): string {
+  const t = String(fieldStr).trim();
+  return t.endsWith('field') ? t : `${t}field`;
+}
+
+/** Default `@provablehq/wasm` entry is testnet; align with `CURRENT_NETWORK` when you switch to mainnet builds. */
+async function loadProvableWasm(): Promise<typeof import('@provablehq/wasm')> {
+  if (CURRENT_NETWORK === Network.MAINNET) {
+    // Subpath exists at runtime (package exports); TS moduleResolution: node may not resolve it.
+    // @ts-expect-error -- provable wasm mainnet entry
+    return import('@provablehq/wasm/mainnet.js');
+  }
+  return import('@provablehq/wasm');
+}
+
+/** Leo: user_key = BHP256::hash_to_field(caller). Same as xyra_lending_v3 mapping inputs. */
+export async function computeUserKeyFieldFromAddress(address: string): Promise<string | null> {
+  try {
+    const cacheKey = `${USER_FIELD_HASH_SCHEME_VERSION}:${address}`;
+    if (userFieldHashCache.has(cacheKey)) {
+      return userFieldHashCache.get(cacheKey) ?? null;
+    }
+    const { BHP256, Address } = await loadProvableWasm();
+    const bhp = new BHP256();
+    const addr = Address.from_string(address);
+    // Leo's `BHP256::hash_to_field(caller)` hashes the field elements of the address.
+    // Hashing the address object directly can diverge depending on wasm bindings.
+    const userKeyField = bhp.hash(addr.toFields());
+    const s = userKeyField.toString();
+    userFieldHashCache.set(cacheKey, s);
+    return s;
+  } catch (e) {
+    console.warn('computeUserKeyFieldFromAddress failed:', e);
+    return null;
+  }
+}
+
 /**
- * Effective supply balance = (user_scaled_supply * liquidity_index) / INDEX_SCALE.
+ * Leo: compute_position_key(user_key, asset_id) = BHP256::hash_to_field(user_key + asset_id).
+ * assetIdField: ALEO 0field, USDCx 1field, USAD 2field (xyra_lending_v3).
+ */
+export async function computeLendingPositionMappingKey(
+  address: string,
+  assetIdField: string,
+): Promise<string | null> {
+  try {
+    const cacheKey = `${USER_FIELD_HASH_SCHEME_VERSION}:${address}:${assetIdField}`;
+    if (lendingPositionKeyCache.has(cacheKey)) {
+      return lendingPositionKeyCache.get(cacheKey) ?? null;
+    }
+    const userKeyStr = await computeUserKeyFieldFromAddress(address);
+    if (!userKeyStr) return null;
+    const { BHP256, Field } = await loadProvableWasm();
+    const bhp = new BHP256();
+    const userKey = Field.fromString(normalizeFieldLiteral(userKeyStr));
+    const assetF = Field.fromString(normalizeFieldLiteral(assetIdField));
+    const sum = userKey.add(assetF);
+    const posKey = bhp.hash([sum]);
+    const out = posKey.toString();
+    lendingPositionKeyCache.set(cacheKey, out);
+    return out;
+  } catch (e) {
+    console.warn('computeLendingPositionMappingKey failed:', e);
+    return null;
+  }
+}
+
+/**
+ * Effective supply balance = (user_scaled_supply * supply_index) / INDEX_SCALE.
  * Effective borrow debt = (user_scaled_borrow * borrow_index) / INDEX_SCALE.
- * Returns null if user hash cannot be computed (frontend falls back to record-based position).
+ *
+ * @param assetIdField Per-asset key: `0field` (ALEO), `1field` (USDCx), `2field` (USAD) for unified v3.
+ * Returns null if position key cannot be computed (caller should fall back to records).
  */
 export async function getAleoPoolUserEffectivePosition(
   programId: string,
-  userAddress: string
+  userAddress: string,
+  assetIdField: string = '0field',
 ): Promise<{ effectiveSupplyBalance: number; effectiveBorrowDebt: number } | null> {
-  const userHash = computeAddressHash(userAddress);
-  if (!userHash) return null;
+  const posKey = await computeLendingPositionMappingKey(userAddress, assetIdField);
+  if (!posKey) return null;
   try {
     const requestWithErrorHandling = async (mappingName: string, key: string) => {
       try {
@@ -2982,26 +3211,32 @@ export async function getAleoPoolUserEffectivePosition(
       }
     };
 
-    // v91: global key is 0field and supply index is `supply_index`.
-    // v86: global key is 0u8 and liquidity index is `liquidity_index`.
-    const [scaledSupply, scaledBorrow] = await Promise.all([
-      requestWithErrorHandling('user_scaled_supply', userHash),
-      requestWithErrorHandling('user_scaled_borrow', userHash),
-    ]);
-
-    const INDEX_SCALE_ALEO = 1_000_000_000_000n;
-
-    const keyField = '0field';
+    const assetKey = normalizeFieldLiteral(assetIdField);
     const keyU8 = '0u8';
-    const [supplyIndexV91, borrowIndexV91, liquidityIndexV86, borrowIndexV86] = await Promise.all([
-      requestWithErrorHandling('supply_index', keyField),
-      requestWithErrorHandling('borrow_index', keyField),
-      requestWithErrorHandling('liquidity_index', keyU8),
-      requestWithErrorHandling('borrow_index', keyU8),
+    const [scaledSupply, scaledBorrow, supplyIndexAsset, borrowIndexAsset] = await Promise.all([
+      requestWithErrorHandling('user_scaled_supply', posKey),
+      requestWithErrorHandling('user_scaled_borrow', posKey),
+      requestWithErrorHandling('supply_index', assetKey),
+      requestWithErrorHandling('borrow_index', assetKey),
     ]);
 
-    const li = supplyIndexV91 ?? liquidityIndexV86 ?? INDEX_SCALE_ALEO;
-    const bi = borrowIndexV91 ?? borrowIndexV86 ?? INDEX_SCALE_ALEO;
+    const INDEX_SCALE_ALEO = BigInt('1000000000000');
+
+    // Unified v3: indices are per asset_id. Legacy single-asset pools: fall back to 0field / 0u8.
+    let li = supplyIndexAsset;
+    if (li == null) {
+      li =
+        (await requestWithErrorHandling('supply_index', '0field')) ??
+        (await requestWithErrorHandling('liquidity_index', keyU8));
+    }
+    let bi = borrowIndexAsset;
+    if (bi == null) {
+      bi =
+        (await requestWithErrorHandling('borrow_index', '0field')) ??
+        (await requestWithErrorHandling('borrow_index', keyU8));
+    }
+    li = li ?? INDEX_SCALE_ALEO;
+    bi = bi ?? INDEX_SCALE_ALEO;
     const ss = scaledSupply ?? BigInt(0);
     const sb = scaledBorrow ?? BigInt(0);
     const effectiveSupplyBalance = Number((ss * li) / INDEX_SCALE_ALEO);
@@ -3010,6 +3245,333 @@ export async function getAleoPoolUserEffectivePosition(
   } catch {
     return null;
   }
+}
+
+/** Matches `xyra_lending_v4.aleo` / `weighted_collateral_usd` + `finalize_borrow` (INDEX_SCALE, PRICE_SCALE, SCALE). */
+const LENDING_INDEX_SCALE = BigInt('1000000000000');
+const LENDING_PRICE_SCALE = BigInt('1000000');
+const LENDING_LTV_SCALE = BigInt('10000');
+/** u128::MAX — same bound as Leo for `(real_sup * price) * ltv` before single division. */
+const LENDING_U128_MAX = BigInt('340282366920938463463374607431768211455');
+
+function weightedCollateralUsdMicro(realSup: bigint, price: bigint, ltv: bigint): bigint {
+  const rp = realSup * price;
+  const den = LENDING_PRICE_SCALE * LENDING_LTV_SCALE;
+  const rpTimesLOk = ltv === BigInt(0) || rp <= LENDING_U128_MAX / ltv;
+  return rpTimesLOk ? (rp * ltv) / den : ((rp / LENDING_PRICE_SCALE) * ltv) / LENDING_LTV_SCALE;
+}
+
+async function getMappingU64Big(programId: string, mappingName: string, key: string): Promise<bigint | null> {
+  try {
+    const res = await client.request('getMappingValue', {
+      program_id: programId,
+      mapping_name: mappingName,
+      key,
+    });
+    const raw = res?.value ?? res ?? null;
+    if (raw == null) return null;
+    const str = String(raw).replace(/u64$/i, '').trim();
+    if (!str) return null;
+    return BigInt(str);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Replicates `finalize_borrow` collateral/debt USD totals and max borrow per asset (micro units)
+ * so the UI cannot exceed `assert(total_debt + new_borrow_usd <= total_collateral)`.
+ */
+export type CrossCollateralChainCaps = {
+  totalCollateralUsd: bigint;
+  totalDebtUsd: bigint;
+  headroomUsd: bigint;
+  maxBorrowMicroAleo: bigint;
+  maxBorrowMicroUsdcx: bigint;
+  maxBorrowMicroUsad: bigint;
+};
+
+export async function getCrossCollateralBorrowCapsFromChain(
+  programId: string,
+  userAddress: string,
+): Promise<CrossCollateralChainCaps | null> {
+  const [pkAleo, pkUsdcx, pkUsad] = await Promise.all([
+    computeLendingPositionMappingKey(userAddress, '0field'),
+    computeLendingPositionMappingKey(userAddress, '1field'),
+    computeLendingPositionMappingKey(userAddress, '2field'),
+  ]);
+  if (!pkAleo || !pkUsdcx || !pkUsad) return null;
+
+  const z = (x: bigint | null) => x ?? BigInt(0);
+
+  const [
+    ssA,
+    ssU,
+    ssD,
+    sbA,
+    sbU,
+    sbD,
+    supA,
+    supU,
+    supD,
+    borA,
+    borU,
+    borD,
+    pA,
+    pU,
+    pD,
+    ltvA,
+    ltvU,
+    ltvD,
+  ] = await Promise.all([
+    getMappingU64Big(programId, 'user_scaled_supply', pkAleo),
+    getMappingU64Big(programId, 'user_scaled_supply', pkUsdcx),
+    getMappingU64Big(programId, 'user_scaled_supply', pkUsad),
+    getMappingU64Big(programId, 'user_scaled_borrow', pkAleo),
+    getMappingU64Big(programId, 'user_scaled_borrow', pkUsdcx),
+    getMappingU64Big(programId, 'user_scaled_borrow', pkUsad),
+    getMappingU64Big(programId, 'supply_index', '0field'),
+    getMappingU64Big(programId, 'supply_index', '1field'),
+    getMappingU64Big(programId, 'supply_index', '2field'),
+    getMappingU64Big(programId, 'borrow_index', '0field'),
+    getMappingU64Big(programId, 'borrow_index', '1field'),
+    getMappingU64Big(programId, 'borrow_index', '2field'),
+    getMappingU64Big(programId, 'asset_price', '0field'),
+    getMappingU64Big(programId, 'asset_price', '1field'),
+    getMappingU64Big(programId, 'asset_price', '2field'),
+    getMappingU64Big(programId, 'asset_ltv', '0field'),
+    getMappingU64Big(programId, 'asset_ltv', '1field'),
+    getMappingU64Big(programId, 'asset_ltv', '2field'),
+  ]);
+
+  const supIdxA = supA ?? LENDING_INDEX_SCALE;
+  const supIdxU = supU ?? LENDING_INDEX_SCALE;
+  const supIdxD = supD ?? LENDING_INDEX_SCALE;
+  const borIdxA = borA ?? LENDING_INDEX_SCALE;
+  const borIdxU = borU ?? LENDING_INDEX_SCALE;
+  const borIdxD = borD ?? LENDING_INDEX_SCALE;
+
+  const priceA = pA ?? LENDING_PRICE_SCALE;
+  const priceU = pU ?? LENDING_PRICE_SCALE;
+  const priceD = pD ?? LENDING_PRICE_SCALE;
+
+  const ltvAB = ltvA ?? BigInt(7500);
+  const ltvUB = ltvU ?? BigInt(8500);
+  const ltvDB = ltvD ?? BigInt(8500);
+
+  const realSupA = (z(ssA) * supIdxA) / LENDING_INDEX_SCALE;
+  const realSupU = (z(ssU) * supIdxU) / LENDING_INDEX_SCALE;
+  const realSupD = (z(ssD) * supIdxD) / LENDING_INDEX_SCALE;
+  const realBorA = (z(sbA) * borIdxA) / LENDING_INDEX_SCALE;
+  const realBorU = (z(sbU) * borIdxU) / LENDING_INDEX_SCALE;
+  const realBorD = (z(sbD) * borIdxD) / LENDING_INDEX_SCALE;
+
+  // finalize_borrow: weighted_* (weighted_collateral_usd) and debt_* (same order as Leo).
+  const weightedA = weightedCollateralUsdMicro(realSupA, priceA, ltvAB);
+  const weightedU = weightedCollateralUsdMicro(realSupU, priceU, ltvUB);
+  const weightedD = weightedCollateralUsdMicro(realSupD, priceD, ltvDB);
+  const totalCollateralUsd = weightedA + weightedU + weightedD;
+
+  const debtA = (realBorA * priceA) / LENDING_PRICE_SCALE;
+  const debtU = (realBorU * priceU) / LENDING_PRICE_SCALE;
+  const debtD = (realBorD * priceD) / LENDING_PRICE_SCALE;
+  const totalDebtUsd = debtA + debtU + debtD;
+
+  let headroomUsd = totalCollateralUsd - totalDebtUsd;
+  if (headroomUsd < BigInt(0)) headroomUsd = BigInt(0);
+
+  const maxMicroForPrice = (head: bigint, price: bigint): bigint => {
+    if (head <= BigInt(0) || price <= BigInt(0)) return BigInt(0);
+    return (head * LENDING_PRICE_SCALE + LENDING_PRICE_SCALE - BigInt(1)) / price;
+  };
+
+  return {
+    totalCollateralUsd,
+    totalDebtUsd,
+    headroomUsd,
+    maxBorrowMicroAleo: maxMicroForPrice(headroomUsd, priceA),
+    maxBorrowMicroUsdcx: maxMicroForPrice(headroomUsd, priceU),
+    maxBorrowMicroUsad: maxMicroForPrice(headroomUsd, priceD),
+  };
+}
+
+export type CrossCollateralWithdrawCaps = {
+  maxWithdrawMicroAleo: bigint;
+  maxWithdrawMicroUsdcx: bigint;
+  maxWithdrawMicroUsad: bigint;
+};
+
+/**
+ * Replicates `finalize_withdraw` health + collateral burn logic from `xyra_lending_v4.aleo`.
+ * Returns the maximum output-asset amount (micro units) the user can withdraw while the
+ * program's assertions pass, allowing "withdraw with any asset".
+ */
+export async function getCrossCollateralWithdrawCapsFromChain(
+  programId: string,
+  userAddress: string,
+): Promise<CrossCollateralWithdrawCaps | null> {
+  const [pkAleo, pkUsdcx, pkUsad] = await Promise.all([
+    computeLendingPositionMappingKey(userAddress, '0field'),
+    computeLendingPositionMappingKey(userAddress, '1field'),
+    computeLendingPositionMappingKey(userAddress, '2field'),
+  ]);
+  if (!pkAleo || !pkUsdcx || !pkUsad) return null;
+
+  const z = (x: bigint | null) => x ?? BigInt(0);
+
+  const [
+    ssA,
+    ssU,
+    ssD,
+    sbA,
+    sbU,
+    sbD,
+    supA,
+    supU,
+    supD,
+    borA,
+    borU,
+    borD,
+    pA,
+    pU,
+    pD,
+    ltvA,
+    ltvU,
+    ltvD,
+  ] = await Promise.all([
+    getMappingU64Big(programId, 'user_scaled_supply', pkAleo),
+    getMappingU64Big(programId, 'user_scaled_supply', pkUsdcx),
+    getMappingU64Big(programId, 'user_scaled_supply', pkUsad),
+    getMappingU64Big(programId, 'user_scaled_borrow', pkAleo),
+    getMappingU64Big(programId, 'user_scaled_borrow', pkUsdcx),
+    getMappingU64Big(programId, 'user_scaled_borrow', pkUsad),
+    getMappingU64Big(programId, 'supply_index', '0field'),
+    getMappingU64Big(programId, 'supply_index', '1field'),
+    getMappingU64Big(programId, 'supply_index', '2field'),
+    getMappingU64Big(programId, 'borrow_index', '0field'),
+    getMappingU64Big(programId, 'borrow_index', '1field'),
+    getMappingU64Big(programId, 'borrow_index', '2field'),
+    getMappingU64Big(programId, 'asset_price', '0field'),
+    getMappingU64Big(programId, 'asset_price', '1field'),
+    getMappingU64Big(programId, 'asset_price', '2field'),
+    getMappingU64Big(programId, 'asset_ltv', '0field'),
+    getMappingU64Big(programId, 'asset_ltv', '1field'),
+    getMappingU64Big(programId, 'asset_ltv', '2field'),
+  ]);
+
+  const supIdxA = supA ?? LENDING_INDEX_SCALE;
+  const supIdxU = supU ?? LENDING_INDEX_SCALE;
+  const supIdxD = supD ?? LENDING_INDEX_SCALE;
+  const borIdxA = borA ?? LENDING_INDEX_SCALE;
+  const borIdxU = borU ?? LENDING_INDEX_SCALE;
+  const borIdxD = borD ?? LENDING_INDEX_SCALE;
+
+  const priceA = pA ?? LENDING_PRICE_SCALE;
+  const priceU = pU ?? LENDING_PRICE_SCALE;
+  const priceD = pD ?? LENDING_PRICE_SCALE;
+
+  const ltvAB = ltvA ?? BigInt(7500);
+  const ltvUB = ltvU ?? BigInt(8500);
+  const ltvDB = ltvD ?? BigInt(8500);
+
+  const realSup = [
+    (z(ssA) * supIdxA) / LENDING_INDEX_SCALE,
+    (z(ssU) * supIdxU) / LENDING_INDEX_SCALE,
+    (z(ssD) * supIdxD) / LENDING_INDEX_SCALE,
+  ];
+  const realBor = [
+    (z(sbA) * borIdxA) / LENDING_INDEX_SCALE,
+    (z(sbU) * borIdxU) / LENDING_INDEX_SCALE,
+    (z(sbD) * borIdxD) / LENDING_INDEX_SCALE,
+  ];
+
+  const prices = [priceA, priceU, priceD];
+  const ltvs = [ltvAB, ltvUB, ltvDB];
+
+  const debtUsd = [
+    (realBor[0] * prices[0]) / LENDING_PRICE_SCALE,
+    (realBor[1] * prices[1]) / LENDING_PRICE_SCALE,
+    (realBor[2] * prices[2]) / LENDING_PRICE_SCALE,
+  ];
+  const totalDebtUsd = debtUsd[0] + debtUsd[1] + debtUsd[2];
+
+  const supUsdBefore = [
+    (realSup[0] * prices[0]) / LENDING_PRICE_SCALE,
+    (realSup[1] * prices[1]) / LENDING_PRICE_SCALE,
+    (realSup[2] * prices[2]) / LENDING_PRICE_SCALE,
+  ];
+  const totalSupplyUsdBefore = supUsdBefore[0] + supUsdBefore[1] + supUsdBefore[2];
+
+  const MAX_U64 = (BigInt(1) << BigInt(64)) - BigInt(1);
+
+  const canWithdraw = (amountOutMicro: bigint, outIdx: 0 | 1 | 2): boolean => {
+    if (amountOutMicro <= BigInt(0)) return false;
+    const priceOut = prices[outIdx];
+    if (priceOut <= BigInt(0)) return false;
+
+    // withdraw_usd = floor(amount * price_out / PRICE_SCALE)
+    const withdrawUsd = (amountOutMicro * priceOut) / LENDING_PRICE_SCALE;
+    if (withdrawUsd <= BigInt(0)) return false;
+    if (withdrawUsd > totalSupplyUsdBefore) return false;
+
+    // Burn collateral in deterministic order: ALEO -> USDCx -> USAD
+    let rem = withdrawUsd;
+    const burnAmt: bigint[] = [BigInt(0), BigInt(0), BigInt(0)];
+    for (const idx of [0, 1, 2] as const) {
+      const targetUsd = rem > supUsdBefore[idx] ? supUsdBefore[idx] : rem;
+      const burnAmtRaw = (targetUsd * LENDING_PRICE_SCALE) / prices[idx];
+      const burnAmtIdx = burnAmtRaw > realSup[idx] ? realSup[idx] : burnAmtRaw;
+      const burnUsd = (burnAmtIdx * prices[idx]) / LENDING_PRICE_SCALE;
+      rem = rem > burnUsd ? rem - burnUsd : BigInt(0);
+      burnAmt[idx] = burnAmtIdx;
+    }
+
+    // Tiny rounding dust tolerance in USD-micro units.
+    if (rem > BigInt(3)) return false;
+
+    const realSupAfter = [
+      realSup[0] > burnAmt[0] ? realSup[0] - burnAmt[0] : BigInt(0),
+      realSup[1] > burnAmt[1] ? realSup[1] - burnAmt[1] : BigInt(0),
+      realSup[2] > burnAmt[2] ? realSup[2] - burnAmt[2] : BigInt(0),
+    ];
+
+    const weightedAfter = [
+      weightedCollateralUsdMicro(realSupAfter[0], prices[0], ltvs[0]),
+      weightedCollateralUsdMicro(realSupAfter[1], prices[1], ltvs[1]),
+      weightedCollateralUsdMicro(realSupAfter[2], prices[2], ltvs[2]),
+    ];
+    const totalCollateralAfter = weightedAfter[0] + weightedAfter[1] + weightedAfter[2];
+
+    return totalDebtUsd === BigInt(0) || totalDebtUsd <= totalCollateralAfter;
+  };
+
+  const maxAmtForOut = (outIdx: 0 | 1 | 2): bigint => {
+    const priceOut = prices[outIdx];
+    if (priceOut <= BigInt(0)) return BigInt(0);
+
+    // Upper bound ignores health constraint:
+    // amount = floor(total_supply_usd_before * PRICE_SCALE / price_out)
+    let high = (totalSupplyUsdBefore * LENDING_PRICE_SCALE) / priceOut;
+    if (high > MAX_U64) high = MAX_U64;
+
+    let low = BigInt(0);
+    while (low < high) {
+      const mid = (low + high + BigInt(1)) / BigInt(2);
+      if (canWithdraw(mid, outIdx)) low = mid;
+      else high = mid - BigInt(1);
+    }
+    return low;
+  };
+
+  const maxMicroAleo = maxAmtForOut(0);
+  const maxMicroUsdcx = maxAmtForOut(1);
+  const maxMicroUsad = maxAmtForOut(2);
+
+  return {
+    maxWithdrawMicroAleo: maxMicroAleo,
+    maxWithdrawMicroUsdcx: maxMicroUsdcx,
+    maxWithdrawMicroUsad: maxMicroUsad,
+  };
 }
 
 /**
@@ -3408,50 +3970,6 @@ export async function lendingRepay(
  * Calls: lending_pool_v8.aleo/accrue_interest(public delta_index: u64) -> Future
  */
 
-// Cache for address hashes to avoid recomputing
-const addressHashCache = new Map<string, string>();
-
-/**
- * Compute BHP256 hash of an Aleo address directly in JavaScript (no transaction needed!).
- * 
- * This computes BHP256::hash_to_field(address) which is used as the key
- * for reading user activity from public mappings.
- * 
- * Uses @aleohq/wasm library to compute the hash client-side.
- * The hash is cached to avoid recomputing.
- * 
- * @param address - Aleo address (aleo1...)
- * @returns Hash as field value (string representation), or null if failed
- */
-function computeAddressHash(address: string): string | null {
-  try {
-    // Check cache first
-    if (addressHashCache.has(address)) {
-      const cachedHash = addressHashCache.get(address);
-      console.log('computeAddressHash: Using cached hash for:', address);
-      return cachedHash || null;
-    }
-    
-    console.log('computeAddressHash: BHP256 hash computation via @aleohq/wasm is currently disabled');
-    console.log('computeAddressHash: Reason: WASM build issues in Next.js (wbg module resolution)');
-    console.log('computeAddressHash: Falling back to contract call method or records method');
-    
-    // TODO: Once @aleohq/wasm is properly configured with Next.js, implement BHP256 hashing here
-    // The implementation would be:
-    // 1. Dynamically import @aleohq/wasm (to avoid build-time issues)
-    // 2. Use Address.from_string(address)
-    // 3. Call BHP256::hash_to_field() equivalent
-    // 4. Return the hash as a field string
-    
-    return null;
-  } catch (error) {
-    console.error('computeAddressHash: Failed to compute hash:', error);
-    return null;
-  }
-}
-
-/**
- * Read user's activity from UserActivity records returned by contract transitions.
 /**
  * Read user's activity from UserActivity records returned by contract transitions.
  * 

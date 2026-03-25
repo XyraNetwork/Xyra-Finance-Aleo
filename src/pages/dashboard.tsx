@@ -35,6 +35,9 @@ import {
   lendingAccrueInterest,
   lendingAccrueInterestUsdc,
   lendingAccrueInterestUsad,
+  lendingFlashLoan,
+  aleoFlashFeeMicro,
+  ALEO_FLASH_PREMIUM_BPS,
   debugAllRecords,
   LENDING_POOL_PROGRAM_ID,
   USDC_LENDING_POOL_PROGRAM_ID,
@@ -45,10 +48,15 @@ import {
   getAleoPoolUserEffectivePosition,
   getPrivateCreditsBalance,
   getUsadLendingPoolState,
+  getAssetPriceForProgram,
+  getCrossCollateralBorrowCapsFromChain,
+  getCrossCollateralWithdrawCapsFromChain,
   createTestCredits,
   depositTestReal,
   logAleoTxExplorer,
   ALEO_TESTNET_TX_EXPLORER,
+  type CrossCollateralChainCaps,
+  type CrossCollateralWithdrawCaps,
 } from '@/components/aleo/rpc';
 import { frontendLogger } from '@/utils/logger';
 import { CURRENT_NETWORK } from '@/types';
@@ -74,8 +82,10 @@ function logPoolTxRejected(
     hints:
       status.toLowerCase() === 'rejected'
         ? [
-            'Validator rejected: common for repay if amount > on-chain accrued debt (interest), invalid Merkle proofs, or env program id ≠ deployed pool.',
-            'Try a slightly smaller repay; run accrue interest if your pool supports it; verify wallet registered the same programs.',
+            meta?.action === 'borrow'
+              ? 'Validator rejected borrow: usually new_borrow_usd > cross-collateral headroom (integer rounding), wrong program id, or stale UI — try Max (chain) or a slightly smaller amount; confirm on-chain asset_price / LTV.'
+              : 'Validator rejected: for repay, amount > accrued debt or bad Merkle proofs; for borrow, portfolio assert failed or program mismatch.',
+            'Verify NEXT_PUBLIC_* pool id matches deployment; run accrue interest; refresh balances.',
           ]
         : undefined,
   });
@@ -91,6 +101,9 @@ const DashboardPage: NextPageWithLayout = () => {
       setView('markets');
     } else if (router.query.view === 'docs') {
       setView('docs');
+    } else if (router.query.view === 'flash') {
+      // Flash is intentionally hidden right now.
+      setView('dashboard');
     } else {
       setView('dashboard');
     }
@@ -206,6 +219,14 @@ const DashboardPage: NextPageWithLayout = () => {
   const [amountUsad, setAmountUsad] = useState<number>(0);
   const [amountErrorUsad, setAmountErrorUsad] = useState<string | null>(null);
   const [privateUsadBalance, setPrivateUsadBalance] = useState<number | null>(null);
+  const [assetPriceAleo, setAssetPriceAleo] = useState<number | null>(null); // PRICE_SCALE (1e6)
+  const [assetPriceUsdc, setAssetPriceUsdc] = useState<number | null>(null); // PRICE_SCALE (1e6)
+  const [assetPriceUsad, setAssetPriceUsad] = useState<number | null>(null); // PRICE_SCALE (1e6)
+  /** Matches `finalize_borrow` integer math; when set, borrow limits use this instead of float portfolio. */
+  const [chainBorrowCaps, setChainBorrowCaps] = useState<CrossCollateralChainCaps | null>(null);
+
+  /** Matches `finalize_withdraw` integer math; when set, withdraw caps use this instead of float portfolio. */
+  const [chainWithdrawCaps, setChainWithdrawCaps] = useState<CrossCollateralWithdrawCaps | null>(null);
 
   // Action modal (Aave-style: withdraw/deposit/borrow/repay with overview + tx status)
   const [actionModalOpen, setActionModalOpen] = useState(false);
@@ -215,6 +236,13 @@ const DashboardPage: NextPageWithLayout = () => {
 
   // Track if we've already triggered a one-time records permission request for this connection
   const [walletPermissionsInitialized, setWalletPermissionsInitialized] = useState<boolean>(false);
+
+  // Flash loan (ALEO pool only) — separate tab
+  const [flashAmountInput, setFlashAmountInput] = useState('');
+  const [flashLoading, setFlashLoading] = useState(false);
+  const [flashStatusMessage, setFlashStatusMessage] = useState('');
+  const [flashTxId, setFlashTxId] = useState<string | null>(null);
+  const [flashVaultTxId, setFlashVaultTxId] = useState<string | null>(null);
   // Track if we've already loaded the user's position once after wallet connect
   const [userPositionInitialized, setUserPositionInitialized] = useState<boolean>(false);
 
@@ -255,12 +283,27 @@ const DashboardPage: NextPageWithLayout = () => {
   // Helper to parse numeric u64-style fields (e.g. "10u64", "10u64.private") from decrypted text.
   const extractU64FromText = (label: string, text: string): number => {
     if (!text) return 0;
-    const regex = new RegExp(`${label}\\s*[:=]\\s*([0-9_]+)u64`, 'i');
+    // Some pools may emit counters as `u64` or `u128`; normalize both.
+    const regex = new RegExp(`${label}\\s*[:=]\\s*([0-9_]+)u(?:64|128)`, 'i');
     const match = text.match(regex);
     if (!match || !match[1]) return 0;
     const cleaned = match[1].replace(/_/g, '');
     const n = Number(cleaned);
     return Number.isNaN(n) ? 0 : n;
+  };
+
+  // Parse field-style values (e.g. "0field") from decrypted Leo record text.
+  const extractFieldFromText = (label: string, text: string): string | null => {
+    if (!text) return null;
+    // `asset_id` may be printed as `2field` or sometimes `2u8` / `2u64` depending on how
+    // the record was generated. Normalize all numeric variants to `<n>field` so the
+    // existing filters (`assetId !== '2field'`) keep working.
+    const regex = new RegExp(`${label}\\s*[:=]\\s*([0-9_]+)(field|u8|u64|u128)?`, 'i');
+    const match = text.match(regex);
+    if (!match || !match[1]) return null;
+    const n = match[1].replace(/_/g, '');
+    // Always normalize suffix to `field` for comparisons used throughout the UI.
+    return `${n}field`;
   };
 
   // Background record fetching function (non-blocking) - memoized with useCallback
@@ -324,6 +367,11 @@ const DashboardPage: NextPageWithLayout = () => {
         try {
           const decryptedText = await decrypt(cipher);
           console.log(`📋 Decrypted record [${i}] text:`, decryptedText);
+
+          // In v2, one program emits UserActivity for all assets.
+          // Filter to ALEO records only for this fetch path.
+          const assetId = extractFieldFromText('asset_id', decryptedText);
+          if (assetId !== '0field') continue;
 
           // Try to parse totals directly from decrypted Leo record text.
           totalDepositsAccum += extractU64FromText('total_deposits', decryptedText);
@@ -390,6 +438,8 @@ const DashboardPage: NextPageWithLayout = () => {
         if (!cipher) continue;
         try {
           const decryptedText = await decrypt(cipher);
+          const assetId = extractFieldFromText('asset_id', decryptedText);
+          if (assetId !== '1field') continue;
           totalDepositsAccum += extractU64FromText('total_deposits', decryptedText);
           totalWithdrawalsAccum += extractU64FromText('total_withdrawals', decryptedText);
           totalBorrowsAccum += extractU64FromText('total_borrows', decryptedText);
@@ -430,6 +480,9 @@ const DashboardPage: NextPageWithLayout = () => {
         return;
       }
       if (!decrypt) return;
+      const seenAssetIds = new Map<string, number>();
+      let loggedSamples = 0;
+
       let totalDepositsAccum = 0;
       let totalWithdrawalsAccum = 0;
       let totalBorrowsAccum = 0;
@@ -440,6 +493,28 @@ const DashboardPage: NextPageWithLayout = () => {
         if (!cipher) continue;
         try {
           const decryptedText = await decrypt(cipher);
+          const assetId = extractFieldFromText('asset_id', decryptedText);
+          if (assetId) seenAssetIds.set(assetId, (seenAssetIds.get(assetId) ?? 0) + 1);
+          if (loggedSamples < 3) {
+            // Avoid logging huge decrypted text; just show prefix + parsed asset_id.
+            const sampleDeposits = extractU64FromText('total_deposits', decryptedText);
+            const sampleWithdrawals = extractU64FromText('total_withdrawals', decryptedText);
+            const sampleBorrows = extractU64FromText('total_borrows', decryptedText);
+            const sampleRepayments = extractU64FromText('total_repayments', decryptedText);
+            console.log('[USAD records debug] sample', {
+              i,
+              assetId,
+              textPrefix: String(decryptedText).slice(0, 120),
+              parsedTotals: {
+                total_deposits: sampleDeposits,
+                total_withdrawals: sampleWithdrawals,
+                total_borrows: sampleBorrows,
+                total_repayments: sampleRepayments,
+              },
+            });
+            loggedSamples++;
+          }
+          if (assetId !== '2field') continue;
           totalDepositsAccum += extractU64FromText('total_deposits', decryptedText);
           totalWithdrawalsAccum += extractU64FromText('total_withdrawals', decryptedText);
           totalBorrowsAccum += extractU64FromText('total_borrows', decryptedText);
@@ -450,6 +525,15 @@ const DashboardPage: NextPageWithLayout = () => {
       }
       const netSupplied = Math.max(0, totalDepositsAccum - totalWithdrawalsAccum);
       const netBorrowed = Math.max(0, totalBorrowsAccum - totalRepaymentsAccum);
+      console.log('[USAD records debug] assetId distribution', Object.fromEntries(seenAssetIds.entries()));
+      console.log('[USAD records debug] computed nets', {
+        total_deposits: totalDepositsAccum,
+        total_withdrawals: totalWithdrawalsAccum,
+        total_borrows: totalBorrowsAccum,
+        total_repayments: totalRepaymentsAccum,
+        netSupplied,
+        netBorrowed,
+      });
       setTotalDepositsUsad(String(totalDepositsAccum));
       setTotalWithdrawalsUsad(String(totalWithdrawalsAccum));
       setTotalBorrowsUsad(String(totalBorrowsAccum));
@@ -692,7 +776,7 @@ const DashboardPage: NextPageWithLayout = () => {
   const saveTransactionToSupabase = async (
     walletAddress: string,
     txId: string,
-    type: 'deposit' | 'withdraw' | 'borrow' | 'repay',
+    type: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'flash_loan',
     asset: 'aleo' | 'usdc' | 'usad',
     amount: number,
     programId?: string,
@@ -722,10 +806,40 @@ const DashboardPage: NextPageWithLayout = () => {
     }
   };
 
+  /** Replicates `finalize_borrow` caps from chain mappings (same program id for unified v3). */
+  const refreshChainBorrowCaps = useCallback(async () => {
+    if (!publicKey) {
+      setChainBorrowCaps(null);
+      return;
+    }
+    try {
+      const caps = await getCrossCollateralBorrowCapsFromChain(LENDING_POOL_PROGRAM_ID, publicKey);
+      setChainBorrowCaps(caps);
+    } catch {
+      setChainBorrowCaps(null);
+    }
+  }, [publicKey]);
+
+  /** Replicates `finalize_withdraw` caps from chain mappings (cross-asset withdraw). */
+  const refreshChainWithdrawCaps = useCallback(async () => {
+    if (!publicKey) {
+      setChainWithdrawCaps(null);
+      return;
+    }
+    try {
+      const caps = await getCrossCollateralWithdrawCapsFromChain(LENDING_POOL_PROGRAM_ID, publicKey);
+      setChainWithdrawCaps(caps);
+    } catch {
+      setChainWithdrawCaps(null);
+    }
+  }, [publicKey]);
+
   const refreshPoolState = async (includeUserPosition: boolean = false) => {
     try {
       setIsRefreshingState(true);
       const state = await getLendingPoolState();
+      const onChainPrice = await getAssetPriceForProgram(LENDING_POOL_PROGRAM_ID, '0field');
+      setAssetPriceAleo(onChainPrice);
       setTotalSupplied(state.totalSupplied ?? '0');
       setTotalBorrowed(state.totalBorrowed ?? '0');
       setUtilizationIndex(state.utilizationIndex ?? '0');
@@ -741,7 +855,7 @@ const DashboardPage: NextPageWithLayout = () => {
       if (includeUserPosition && publicKey) {
         try {
           await fetchRecordsInBackground(LENDING_POOL_PROGRAM_ID);
-          const effective = await getAleoPoolUserEffectivePosition(LENDING_POOL_PROGRAM_ID, publicKey);
+          const effective = await getAleoPoolUserEffectivePosition(LENDING_POOL_PROGRAM_ID, publicKey, '0field');
           if (effective) {
             setEffectiveUserSupplied(effective.effectiveSupplyBalance);
             setEffectiveUserBorrowed(effective.effectiveBorrowDebt);
@@ -752,6 +866,8 @@ const DashboardPage: NextPageWithLayout = () => {
           if (requestRecords) {
             getPrivateCreditsBalance(requestRecords, decrypt).then(setPrivateAleoBalance).catch(() => setPrivateAleoBalance(null));
           }
+          await refreshChainBorrowCaps();
+          await refreshChainWithdrawCaps();
         } catch (error) {
           console.warn('Failed to refresh user position from records:', error);
           setUserSupplied('0');
@@ -762,6 +878,8 @@ const DashboardPage: NextPageWithLayout = () => {
           setTotalRepayments('0');
           setEffectiveUserSupplied(null);
           setEffectiveUserBorrowed(null);
+          setChainBorrowCaps(null);
+          setChainWithdrawCaps(null);
         }
       } else {
         setUserSupplied('0');
@@ -773,6 +891,8 @@ const DashboardPage: NextPageWithLayout = () => {
         setEffectiveUserSupplied(null);
         setEffectiveUserBorrowed(null);
         setPrivateAleoBalance(null);
+        setChainBorrowCaps(null);
+        setChainWithdrawCaps(null);
       }
     } catch (e) {
       console.error('Failed to fetch pool state', e);
@@ -787,6 +907,8 @@ const DashboardPage: NextPageWithLayout = () => {
     try {
       setIsRefreshingUsdcState(true);
       const state = await getUsdcLendingPoolState();
+      const onChainPrice = await getAssetPriceForProgram(USDC_LENDING_POOL_PROGRAM_ID, '1field');
+      setAssetPriceUsdc(onChainPrice);
       setTotalSuppliedUsdc(state.totalSupplied ?? '0');
       setTotalBorrowedUsdc(state.totalBorrowed ?? '0');
       setUtilizationIndexUsdc(state.utilizationIndex ?? '0');
@@ -800,7 +922,7 @@ const DashboardPage: NextPageWithLayout = () => {
       if (includeUserPosition && requestRecords && publicKey) {
         try {
           await fetchRecordsInBackgroundUsdc();
-          const effective = await getAleoPoolUserEffectivePosition(USDC_LENDING_POOL_PROGRAM_ID, publicKey);
+          const effective = await getAleoPoolUserEffectivePosition(USDC_LENDING_POOL_PROGRAM_ID, publicKey, '1field');
           if (effective) {
             setEffectiveUserSuppliedUsdc(effective.effectiveSupplyBalance);
             setEffectiveUserBorrowedUsdc(effective.effectiveBorrowDebt);
@@ -809,6 +931,8 @@ const DashboardPage: NextPageWithLayout = () => {
             setEffectiveUserBorrowedUsdc(null);
           }
           getPrivateUsdcBalance(requestRecords, decrypt).then(setPrivateUsdcBalance).catch(() => setPrivateUsdcBalance(null));
+          await refreshChainBorrowCaps();
+          await refreshChainWithdrawCaps();
         } catch (error) {
           console.warn('Failed to refresh USDC user position:', error);
           setUserSuppliedUsdc('0');
@@ -820,11 +944,15 @@ const DashboardPage: NextPageWithLayout = () => {
           setEffectiveUserSuppliedUsdc(null);
           setEffectiveUserBorrowedUsdc(null);
           setPrivateUsdcBalance(null);
+          setChainBorrowCaps(null);
+          setChainWithdrawCaps(null);
         }
       } else {
         setEffectiveUserSuppliedUsdc(null);
         setEffectiveUserBorrowedUsdc(null);
         setPrivateUsdcBalance(null);
+        setChainBorrowCaps(null);
+        setChainWithdrawCaps(null);
       }
     } catch (e) {
       console.error('Failed to fetch USDC pool state', e);
@@ -837,6 +965,8 @@ const DashboardPage: NextPageWithLayout = () => {
     try {
       setIsRefreshingUsadState(true);
       const state = await getUsadLendingPoolState();
+      const onChainPrice = await getAssetPriceForProgram(USAD_LENDING_POOL_PROGRAM_ID, '2field');
+      setAssetPriceUsad(onChainPrice);
       setTotalSuppliedUsad(state.totalSupplied ?? '0');
       setTotalBorrowedUsad(state.totalBorrowed ?? '0');
       setUtilizationIndexUsad(state.utilizationIndex ?? '0');
@@ -851,7 +981,7 @@ const DashboardPage: NextPageWithLayout = () => {
       if (includeUserPosition && requestRecords && publicKey) {
         try {
           await fetchRecordsInBackgroundUsad();
-          const effective = await getAleoPoolUserEffectivePosition(USAD_LENDING_POOL_PROGRAM_ID, publicKey);
+          const effective = await getAleoPoolUserEffectivePosition(USAD_LENDING_POOL_PROGRAM_ID, publicKey, '2field');
           if (effective) {
             setEffectiveUserSuppliedUsad(effective.effectiveSupplyBalance);
             setEffectiveUserBorrowedUsad(effective.effectiveBorrowDebt);
@@ -860,9 +990,15 @@ const DashboardPage: NextPageWithLayout = () => {
             setEffectiveUserBorrowedUsad(null);
           }
 
-          getPrivateUsadBalance(requestRecords, decrypt)
-            .then(setPrivateUsadBalance)
-            .catch(() => setPrivateUsadBalance(null));
+          const privUsad = await getPrivateUsadBalance(requestRecords, decrypt);
+          setPrivateUsadBalance(privUsad);
+          console.log('[USAD refresh debug]', {
+            effectiveSupply_usad: effective?.effectiveSupplyBalance ?? null,
+            effectiveBorrow_usad: effective?.effectiveBorrowDebt ?? null,
+            privateBalance_usad: privUsad,
+          });
+          await refreshChainBorrowCaps();
+          await refreshChainWithdrawCaps();
         } catch (error) {
           console.warn('Failed to refresh USAD user position:', error);
           setUserSuppliedUsad('0');
@@ -874,11 +1010,15 @@ const DashboardPage: NextPageWithLayout = () => {
           setEffectiveUserSuppliedUsad(null);
           setEffectiveUserBorrowedUsad(null);
           setPrivateUsadBalance(null);
+          setChainBorrowCaps(null);
+          setChainWithdrawCaps(null);
         }
       } else {
         setEffectiveUserSuppliedUsad(null);
         setEffectiveUserBorrowedUsad(null);
         setPrivateUsadBalance(null);
+        setChainBorrowCaps(null);
+        setChainWithdrawCaps(null);
       }
     } catch (e) {
       console.error('Failed to fetch USAD pool state', e);
@@ -1054,30 +1194,31 @@ const DashboardPage: NextPageWithLayout = () => {
         ? Math.min(netSupplied, availableLiquidity, maxWithdrawByLtv)
         : Math.min(netSupplied, maxWithdrawByLtv);
 
-      if (action === 'withdraw' && amount > maxWithdrawable) {
-        const msg = `You can withdraw at most ${maxWithdrawable.toFixed(
+      // Withdraw can be satisfied cross-asset on-chain; use the chain-derived cap when available.
+      const chainCapWithdrawAleoHuman = chainWithdrawCaps
+        ? Number(chainWithdrawCaps.maxWithdrawMicroAleo) / 1_000_000
+        : null;
+      // If chain caps aren't available, use the same cross-asset withdraw budget
+      // used by the modal/MAX button (`availableWithdrawAleo`) rather than same-asset supply.
+      const effectiveMaxWithdraw = chainCapWithdrawAleoHuman ?? availableWithdrawAleo;
+
+      if (action === 'withdraw' && amount > effectiveMaxWithdraw) {
+        const msg = `You can withdraw at most ${effectiveMaxWithdraw.toFixed(
           4,
-        )} ALEO. This is capped by your supply, pool liquidity, and 75% LTV safety.`;
+        )} ALEO (frontend estimate from on-chain caps). Final limit is enforced on-chain by cross-collateral portfolio checks.`;
         setAmountError(msg);
         setStatusMessage(msg);
         setLoading(false);
         return;
       }
 
-      if (action === 'repay' && amount > netBorrowed) {
-        const msg = `You need to repay at most ${netBorrowed.toFixed(
-          2,
-        )} ALEO to fully clear your debt.`;
-        setAmountError(msg);
-        setStatusMessage(msg);
-        setLoading(false);
-        return;
-      }
+      // Repay supports cross-asset debt reduction on-chain.
+      // Program clamps the USD repayment to total debt, so we only restrict by user balance above.
 
-      if (action === 'borrow' && poolStateLoaded && amount > availableBorrowAleo) {
+      if (action === 'borrow' && amount > availableBorrowAleo) {
         const msg = `Borrow amount exceeds your available borrow (${availableBorrowAleo.toFixed(
           4,
-        )} ALEO). This is capped by 75% LTV and pool liquidity.`;
+        )} ALEO, frontend estimate). Final limit is enforced on-chain by cross-collateral portfolio checks.`;
         setAmountError(msg);
         setStatusMessage(msg);
         setLoading(false);
@@ -1300,6 +1441,132 @@ const DashboardPage: NextPageWithLayout = () => {
     }
   };
 
+  /** ALEO pool: flash_loan_with_credits — uncollateralized; capped by pool liquidity only. */
+  const handleFlashLoan = async () => {
+    if (!connected || !publicKey || !executeTransaction || !requestRecords) {
+      setFlashStatusMessage('Please connect your wallet.');
+      return;
+    }
+    if (isRefreshingState) {
+      setFlashStatusMessage('Wait for pool data to finish loading, then try again.');
+      return;
+    }
+    const principal = Number(flashAmountInput);
+    if (!Number.isFinite(principal) || principal <= 0) {
+      setFlashStatusMessage('Enter a valid principal amount.');
+      return;
+    }
+    const poolSuppliedMicro = Number(totalSupplied) || 0;
+    const poolBorrowedMicro = Number(totalBorrowed) || 0;
+    /** On-chain liquidity (micro); must not skip check when both totals are 0 — that means 0 available. */
+    const availableLiquidityMicro = Math.max(0, poolSuppliedMicro - poolBorrowedMicro);
+    const principalMicro = Math.round(principal * 1_000_000);
+    if (principalMicro > availableLiquidityMicro) {
+      setFlashStatusMessage(
+        `Principal exceeds pool liquidity (${(availableLiquidityMicro / 1_000_000).toFixed(6)} ALEO available).`,
+      );
+      return;
+    }
+    const feeMicro = aleoFlashFeeMicro(principalMicro);
+    const totalMicro = principalMicro + feeMicro;
+    let balance = privateAleoBalance;
+    if (balance === null && requestRecords) {
+      balance = await getPrivateCreditsBalance(requestRecords, decrypt);
+      setPrivateAleoBalance(balance);
+    }
+    if (totalMicro / 1_000_000 > (balance ?? 0) + 1e-9) {
+      setFlashStatusMessage(
+        `Need one private credits record covering principal + fee (${(totalMicro / 1_000_000).toFixed(6)} ALEO).`,
+      );
+      return;
+    }
+
+    try {
+      setFlashLoading(true);
+      setFlashStatusMessage('Submitting flash loan…');
+      setFlashVaultTxId(null);
+      setFlashTxId(null);
+      const tx = await lendingFlashLoan(executeTransaction, principal, publicKey, requestRecords, decrypt);
+      if (tx === '__CANCELLED__') {
+        setFlashStatusMessage('Transaction cancelled by user.');
+        setFlashLoading(false);
+        return;
+      }
+      let finalTxId = tx;
+      let finalized = false;
+      let txFailed = false;
+      const maxAttempts = 45;
+      const delayMs = 2000;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (transactionStatus) {
+          try {
+            const statusResult = await transactionStatus(tx);
+            const statusText =
+              typeof statusResult === 'string'
+                ? statusResult
+                : (statusResult as { status?: string })?.status ?? '';
+            const statusLower = (statusText || '').toLowerCase();
+            if (statusLower === 'finalized' || statusLower === 'accepted') {
+              finalized = true;
+              const resolvedId =
+                (typeof statusResult === 'object' && (statusResult as { transactionId?: string }).transactionId) ||
+                tx;
+              finalTxId = resolvedId;
+              setFlashTxId(isExplorerHash(resolvedId) ? resolvedId : null);
+              break;
+            }
+            if (statusLower === 'rejected' || statusLower === 'failed' || statusLower === 'dropped') {
+              txFailed = true;
+              logPoolTxRejected('ALEO pool', statusLower, tx, {
+                action: 'flash_loan',
+                program: LENDING_POOL_PROGRAM_ID,
+              });
+              setFlashStatusMessage(`Transaction ${statusLower}.`);
+              setFlashLoading(false);
+              return;
+            }
+            setFlashStatusMessage(`Transaction ${statusText || 'pending'}… (${attempt}/${maxAttempts})`);
+          } catch (e) {
+            console.warn('Flash loan status poll:', e);
+          }
+        }
+      }
+      if (txFailed) {
+        setFlashLoading(false);
+        return;
+      }
+      if (!finalized) {
+        setFlashStatusMessage('Transaction not finalized in time. Check the explorer.');
+        setFlashLoading(false);
+        return;
+      }
+      await saveTransactionToSupabase(
+        publicKey,
+        finalTxId,
+        'flash_loan',
+        'aleo',
+        principal,
+        LENDING_POOL_PROGRAM_ID,
+        null,
+      ).catch(() => {});
+      fetchTransactionHistory();
+      setFlashAmountInput('');
+      setFlashStatusMessage(
+        'Flash loan finalized! Vault will send principal in 1–5 min — check Transaction History.',
+      );
+      try {
+        await refreshPoolState(true);
+      } catch {
+        setFlashStatusMessage((s) => s + ' (Refresh pool manually.)');
+      }
+    } catch (e: unknown) {
+      setFlashStatusMessage(getErrorMessage(e));
+    } finally {
+      setFlashLoading(false);
+    }
+  };
+
   const handleActionUsdc = async (action: 'deposit' | 'borrow' | 'repay' | 'withdraw') => {
     if (!connected || !publicKey || !executeTransaction || !requestRecords) {
       setStatusMessage('Please connect your wallet.');
@@ -1323,30 +1590,30 @@ const DashboardPage: NextPageWithLayout = () => {
       const maxRepayHuman = netBorrowedHuman;
       const availableLiquidityHuman = Math.max(0, (poolSuppliedMicro - poolBorrowedMicro) / USDC_SCALE);
       const poolStateLoadedUsdc = poolSuppliedMicro > 0 || poolBorrowedMicro > 0;
-      // Match ALEO pool: 75% LTV — max borrow = min(pool liquidity, 0.75 * collateral - existing debt)
-      const maxBorrowUsdcByLtv = Math.max(0, netSuppliedHuman * 0.75 - netBorrowedHuman);
-      const maxBorrowUsdc = Math.max(0, Math.min(availableLiquidityHuman, maxBorrowUsdcByLtv));
-      // Withdraw: w <= min(supply, liquidity, C - D/0.75) — same as handleAction (ALEO)
-      const maxWithdrawUsdcByLtv = Math.max(0, netSuppliedHuman - netBorrowedHuman / 0.75);
+      // Withdraw: w <= min(supply, liquidity, C - D/LTV)
+      const maxWithdrawUsdcByLtv = Math.max(0, netSuppliedHuman - netBorrowedHuman / 0.85);
       const maxWithdrawHuman = poolStateLoadedUsdc
         ? Math.min(netSuppliedHuman, availableLiquidityHuman, maxWithdrawUsdcByLtv)
         : Math.min(netSuppliedHuman, maxWithdrawUsdcByLtv);
-      if (action === 'withdraw' && amountUsdc > maxWithdrawHuman) {
-        const msg = `You can withdraw at most ${maxWithdrawHuman.toFixed(4)} USDCx. Capped by your supply, pool liquidity, and 75% LTV safety (same rules as ALEO pool).`;
+      // Withdraw can be satisfied cross-asset on-chain; use the chain-derived cap when available.
+      const chainCapWithdrawUsdcHuman = chainWithdrawCaps
+        ? Number(chainWithdrawCaps.maxWithdrawMicroUsdcx) / 1_000_000
+        : null;
+      const effectiveMaxWithdrawUsdc = chainCapWithdrawUsdcHuman ?? availableWithdrawUsdc;
+
+      if (action === 'withdraw' && amountUsdc > effectiveMaxWithdrawUsdc) {
+        const msg = `You can withdraw at most ${effectiveMaxWithdrawUsdc.toFixed(
+          4,
+        )} USDCx (frontend estimate from on-chain caps). Final limit is enforced on-chain by cross-collateral portfolio checks.`;
         setAmountErrorUsdc(msg);
         setStatusMessage(msg);
         setLoading(false);
         return;
       }
-      if (action === 'repay' && amountUsdc > maxRepayHuman) {
-        const msg = `Repay at most ${maxRepayHuman.toFixed(4)} USDCx (your position). On-chain debt may differ slightly due to interest — reduce amount if the tx rejects.`;
-        setAmountErrorUsdc(msg);
-        setStatusMessage(msg);
-        setLoading(false);
-        return;
-      }
-      if (action === 'borrow' && poolStateLoadedUsdc && amountUsdc > maxBorrowUsdc) {
-        const msg = `Borrow exceeds your available borrow (${maxBorrowUsdc.toFixed(4)} USDCx). Capped by 75% LTV and pool liquidity (same as ALEO pool).`;
+      // Repay supports cross-asset debt reduction on-chain.
+      // Program clamps the USD repayment to total debt, so we only restrict by user balance above.
+      if (action === 'borrow' && amountUsdc > availableBorrowUsdc) {
+        const msg = `Borrow exceeds your available borrow (${availableBorrowUsdc.toFixed(4)} USDCx, frontend estimate). Final limit is enforced on-chain by cross-collateral portfolio checks.`;
         setAmountErrorUsdc(msg);
         setStatusMessage(msg);
         setLoading(false);
@@ -1560,29 +1827,30 @@ const DashboardPage: NextPageWithLayout = () => {
       const maxRepayHuman = netBorrowedHuman;
       const availableLiquidityHuman = Math.max(0, (poolSuppliedMicro - poolBorrowedMicro) / USAD_SCALE);
       const poolStateLoadedUsad = poolSuppliedMicro > 0 || poolBorrowedMicro > 0;
-      const maxBorrowUsadByLtv = Math.max(0, netSuppliedHuman * 0.75 - netBorrowedHuman);
-      const maxBorrowUsad = Math.max(0, Math.min(availableLiquidityHuman, maxBorrowUsadByLtv));
-      const maxWithdrawUsadByLtv = Math.max(0, netSuppliedHuman - netBorrowedHuman / 0.75);
+      const maxWithdrawUsadByLtv = Math.max(0, netSuppliedHuman - netBorrowedHuman / 0.85);
       const maxWithdrawHuman = poolStateLoadedUsad
         ? Math.min(netSuppliedHuman, availableLiquidityHuman, maxWithdrawUsadByLtv)
         : Math.min(netSuppliedHuman, maxWithdrawUsadByLtv);
 
-      if (action === 'withdraw' && amountUsad > maxWithdrawHuman) {
-        const msg = `You can withdraw at most ${maxWithdrawHuman.toFixed(4)} USAD. Capped by supply, pool liquidity, and 75% LTV (same as ALEO pool).`;
+      // Withdraw can be satisfied cross-asset on-chain; use the chain-derived cap when available.
+      const chainCapWithdrawUsadHuman = chainWithdrawCaps
+        ? Number(chainWithdrawCaps.maxWithdrawMicroUsad) / 1_000_000
+        : null;
+      const effectiveMaxWithdrawUsad = chainCapWithdrawUsadHuman ?? availableWithdrawUsad;
+
+      if (action === 'withdraw' && amountUsad > effectiveMaxWithdrawUsad) {
+        const msg = `You can withdraw at most ${effectiveMaxWithdrawUsad.toFixed(
+          4,
+        )} USAD (frontend estimate from on-chain caps). Final limit is enforced on-chain by cross-collateral portfolio checks.`;
         setAmountErrorUsad(msg);
         setStatusMessage(msg);
         setLoading(false);
         return;
       }
-      if (action === 'repay' && amountUsad > maxRepayHuman) {
-        const msg = `Repay at most ${maxRepayHuman.toFixed(4)} USAD. On-chain debt may differ slightly — reduce amount if the tx rejects.`;
-        setAmountErrorUsad(msg);
-        setStatusMessage(msg);
-        setLoading(false);
-        return;
-      }
-      if (action === 'borrow' && poolStateLoadedUsad && amountUsad > maxBorrowUsad) {
-        const msg = `Borrow exceeds your available borrow (${maxBorrowUsad.toFixed(4)} USAD). Capped by 75% LTV and pool liquidity.`;
+      // Repay supports cross-asset debt reduction on-chain.
+      // Program clamps the USD repayment to total debt, so we only restrict by user balance above.
+      if (action === 'borrow' && amountUsad > availableBorrowUsad) {
+        const msg = `Borrow exceeds your available borrow (${availableBorrowUsad.toFixed(4)} USAD, frontend estimate). Final limit is enforced on-chain by cross-collateral portfolio checks.`;
         setAmountErrorUsad(msg);
         setStatusMessage(msg);
         setLoading(false);
@@ -2156,6 +2424,60 @@ const DashboardPage: NextPageWithLayout = () => {
   const borrowDebtUsad = ((effectiveUserBorrowedUsad ?? Number(userBorrowedUsad)) || 0) / 1_000_000;
   const totalSupplyBalance = supplyBalanceAleo + supplyBalanceUsdc + supplyBalanceUsad; // mixed units for count only
   const totalBorrowDebt = borrowDebtAleo + borrowDebtUsdc + borrowDebtUsad;
+  // V2 cross-collateral portfolio estimates (UI-only; contract is source of truth).
+  const ALEO_PRICE_USD =
+    assetPriceAleo != null
+      ? assetPriceAleo / 1_000_000
+      : Number(process.env.NEXT_PUBLIC_ALEO_PRICE_USD ?? 1);
+  const USDCX_PRICE_USD =
+    assetPriceUsdc != null
+      ? assetPriceUsdc / 1_000_000
+      : Number(process.env.NEXT_PUBLIC_USDCX_PRICE_USD ?? 1);
+  const USAD_PRICE_USD =
+    assetPriceUsad != null
+      ? assetPriceUsad / 1_000_000
+      : Number(process.env.NEXT_PUBLIC_USAD_PRICE_USD ?? 1);
+  const ALEO_PRICE_SOURCE = assetPriceAleo != null ? 'on-chain' : 'env';
+  const USDCX_PRICE_SOURCE = assetPriceUsdc != null ? 'on-chain' : 'env';
+  const USAD_PRICE_SOURCE = assetPriceUsad != null ? 'on-chain' : 'env';
+  const LTV_ALEO = 0.75;
+  const LTV_USDCX = 0.85;
+  const LTV_USAD = 0.85;
+  const collateralUsdAleo = supplyBalanceAleo * ALEO_PRICE_USD;
+  const collateralUsdUsdc = supplyBalanceUsdc * USDCX_PRICE_USD;
+  const collateralUsdUsad = supplyBalanceUsad * USAD_PRICE_USD;
+  const totalCollateralUsd = collateralUsdAleo + collateralUsdUsdc + collateralUsdUsad;
+  const weightedCollateralUsd =
+    collateralUsdAleo * LTV_ALEO +
+    collateralUsdUsdc * LTV_USDCX +
+    collateralUsdUsad * LTV_USAD;
+  const debtUsdAleo = borrowDebtAleo * ALEO_PRICE_USD;
+  const debtUsdUsdc = borrowDebtUsdc * USDCX_PRICE_USD;
+  const debtUsdUsad = borrowDebtUsad * USAD_PRICE_USD;
+  const totalDebtUsd = debtUsdAleo + debtUsdUsdc + debtUsdUsad;
+  // Prefer exact `finalize_borrow` headroom from chain mappings when available (avoids float vs u64 drift).
+  const borrowableUsd =
+    chainBorrowCaps != null
+      ? Math.max(0, Number(chainBorrowCaps.headroomUsd) / 1_000_000)
+      : Math.max(0, weightedCollateralUsd - totalDebtUsd);
+  const healthFactor = totalDebtUsd > 0 ? weightedCollateralUsd / totalDebtUsd : null;
+
+  // Suggested "repay max" per selected repay asset.
+  // Repay is cross-asset; when chain-derived totals are unavailable, fall back to the UI's
+  // own totalDebtUsd (computed from per-asset effective debt + prices).
+  const portfolioDebtUsdForRepay =
+    chainBorrowCaps != null
+      ? Math.max(0, Number(chainBorrowCaps.totalDebtUsd) / 1_000_000)
+      : Math.max(0, totalDebtUsd);
+
+  const repaySuggestedAleoHuman =
+    ALEO_PRICE_USD > 0 ? portfolioDebtUsdForRepay / ALEO_PRICE_USD : 0;
+  const repaySuggestedUsdcHuman =
+    USDCX_PRICE_USD > 0 ? portfolioDebtUsdForRepay / USDCX_PRICE_USD : 0;
+  const repaySuggestedUsadHuman =
+    USAD_PRICE_USD > 0 ? portfolioDebtUsdForRepay / USAD_PRICE_USD : 0;
+
+  const hasAnyDebt = borrowDebtAleo > 0 || borrowDebtUsdc > 0 || borrowDebtUsad > 0;
 
   // Simple loading flags for balances
   const walletBalancesLoading = connected && !userPositionInitialized;
@@ -2172,27 +2494,58 @@ const DashboardPage: NextPageWithLayout = () => {
     ((Number(totalSuppliedUsad) || 0) - (Number(totalBorrowedUsad) || 0)) / 1_000_000,
   );
 
-  // Borrow availability is constrained by BOTH:
-  // - Pool liquidity (availableAleo/availableUsdc)
-  // - User LTV: max_debt = 75% of collateral (minus existing debt)
-  const maxBorrowAleoByLtv = Math.max(0, supplyBalanceAleo * 0.75 - borrowDebtAleo);
-  const maxBorrowUsdcByLtv = Math.max(0, supplyBalanceUsdc * 0.75 - borrowDebtUsdc);
-  const maxBorrowUsadByLtv = Math.max(0, supplyBalanceUsad * 0.75 - borrowDebtUsad);
-  const availableBorrowAleo = Math.max(0, Math.min(availableAleo, maxBorrowAleoByLtv));
-  const availableBorrowUsdc = Math.max(0, Math.min(availableUsdc, maxBorrowUsdcByLtv));
-  const availableBorrowUsad = Math.max(0, Math.min(availableUsad, maxBorrowUsadByLtv));
+  // Borrow availability is based on global portfolio USD headroom.
+  // Program no longer hard-blocks by per-asset pool liquidity.
+  const maxBorrowAleoByPortfolio = ALEO_PRICE_USD > 0 ? borrowableUsd / ALEO_PRICE_USD : 0;
+  const maxBorrowUsdcByPortfolio = USDCX_PRICE_USD > 0 ? borrowableUsd / USDCX_PRICE_USD : 0;
+  const maxBorrowUsadByPortfolio = USAD_PRICE_USD > 0 ? borrowableUsd / USAD_PRICE_USD : 0;
+  const availableBorrowAleo = chainBorrowCaps
+    ? Math.max(0, Number(chainBorrowCaps.maxBorrowMicroAleo) / 1_000_000)
+    : Math.max(0, maxBorrowAleoByPortfolio);
+  const availableBorrowUsdc = chainBorrowCaps
+    ? Math.max(0, Number(chainBorrowCaps.maxBorrowMicroUsdcx) / 1_000_000)
+    : Math.max(0, maxBorrowUsdcByPortfolio);
+  const availableBorrowUsad = chainBorrowCaps
+    ? Math.max(0, Number(chainBorrowCaps.maxBorrowMicroUsad) / 1_000_000)
+    : Math.max(0, maxBorrowUsadByPortfolio);
+  const availableBorrowAleoUsd = availableBorrowAleo * ALEO_PRICE_USD;
+  const availableBorrowUsdcUsd = availableBorrowUsdc * USDCX_PRICE_USD;
+  const availableBorrowUsadUsd = availableBorrowUsad * USAD_PRICE_USD;
 
   // Withdraw availability is constrained by BOTH:
   // - User balance (cannot withdraw more than supplied)
   // - Pool liquidity (availableAleo/availableUsdc)
-  // - LTV safety (with remaining collateral, max debt is 75% of collateral)
+  // - Frontend estimate of collateral safety after withdrawal
   //   D <= 0.75 * (C - w)  =>  w <= C - D/0.75
   const maxWithdrawAleoByLtv = Math.max(0, supplyBalanceAleo - borrowDebtAleo / 0.75);
   const maxWithdrawUsdcByLtv = Math.max(0, supplyBalanceUsdc - borrowDebtUsdc / 0.75);
   const maxWithdrawUsadByLtv = Math.max(0, supplyBalanceUsad - borrowDebtUsad / 0.75);
-  const availableWithdrawAleo = Math.max(0, Math.min(supplyBalanceAleo, availableAleo, maxWithdrawAleoByLtv));
-  const availableWithdrawUsdc = Math.max(0, Math.min(supplyBalanceUsdc, availableUsdc, maxWithdrawUsdcByLtv));
-  const availableWithdrawUsad = Math.max(0, Math.min(supplyBalanceUsad, availableUsad, maxWithdrawUsadByLtv));
+
+  // Cross-asset fallback when chain withdraw caps aren't available.
+  // Program health is based on weighted collateral vs debt in USD, so the withdraw budget
+  // (USD) is approximated as `weightedCollateralUsd - totalDebtUsd`.
+  const withdrawUsdFallback = Math.max(0, weightedCollateralUsd - totalDebtUsd);
+  // Cross-asset withdraw caps must come from the chain (mirrors `finalize_withdraw`).
+  const availableWithdrawAleo = chainWithdrawCaps
+    ? Math.max(0, Number(chainWithdrawCaps.maxWithdrawMicroAleo) / 1_000_000)
+    : ALEO_PRICE_USD > 0 ? withdrawUsdFallback / ALEO_PRICE_USD : 0;
+  const availableWithdrawUsdc = chainWithdrawCaps
+    ? Math.max(0, Number(chainWithdrawCaps.maxWithdrawMicroUsdcx) / 1_000_000)
+    : USDCX_PRICE_USD > 0 ? withdrawUsdFallback / USDCX_PRICE_USD : 0;
+  const availableWithdrawUsad = chainWithdrawCaps
+    ? Math.max(0, Number(chainWithdrawCaps.maxWithdrawMicroUsad) / 1_000_000)
+    : USAD_PRICE_USD > 0 ? withdrawUsdFallback / USAD_PRICE_USD : 0;
+
+  const availableWithdrawAleoUsd = availableWithdrawAleo * ALEO_PRICE_USD;
+  const availableWithdrawUsdcUsd = availableWithdrawUsdc * USDCX_PRICE_USD;
+  const availableWithdrawUsadUsd = availableWithdrawUsad * USAD_PRICE_USD;
+
+  // Cross-asset UX: keep the `~$...` hint the same for all withdraw rows by showing a
+  // shared USD budget derived from the most conservative (smallest) output-cap USD.
+  const portfolioWithdrawUsd =
+    chainWithdrawCaps != null
+      ? Math.min(availableWithdrawAleoUsd, availableWithdrawUsdcUsd, availableWithdrawUsadUsd)
+      : withdrawUsdFallback;
 
   const modalAmount = (() => {
     const n = Number(modalAmountInput);
@@ -2226,6 +2579,35 @@ const DashboardPage: NextPageWithLayout = () => {
       : actionModalAsset === 'usdc'
         ? (privateUsdcBalance ?? 0)
         : (privateUsadBalance ?? 0);
+  const modalBorrowPortfolioMax =
+    actionModalAsset === 'aleo'
+      ? maxBorrowAleoByPortfolio
+      : actionModalAsset === 'usdc'
+        ? maxBorrowUsdcByPortfolio
+        : maxBorrowUsadByPortfolio;
+
+  // Repay is cross-asset. In the repay modal we show portfolio debt expressed in the
+  // currently selected repay asset, and clamp MAX by the user's private balance.
+  const repaySuggestedModalHuman =
+    actionModalAsset === 'aleo'
+      ? repaySuggestedAleoHuman
+      : actionModalAsset === 'usdc'
+        ? repaySuggestedUsdcHuman
+        : repaySuggestedUsadHuman;
+
+  const selectedRepayPriceUsd =
+    actionModalAsset === 'aleo'
+      ? ALEO_PRICE_USD
+      : actionModalAsset === 'usdc'
+        ? USDCX_PRICE_USD
+        : USAD_PRICE_USD;
+
+  const repayPaymentUsd = selectedRepayPriceUsd > 0 ? modalAmount * selectedRepayPriceUsd : 0;
+  // Use portfolio debt USD for cross-asset repay budgeting (prefer chain exact totals).
+  const repayBudgetUsd = Math.min(portfolioDebtUsdForRepay, repayPaymentUsd);
+  const remainingDebtUsdAfterRepay = Math.max(0, portfolioDebtUsdForRepay - repayBudgetUsd);
+  const remainingDebtSelectedAssetAfterRepay =
+    selectedRepayPriceUsd > 0 ? remainingDebtUsdAfterRepay / selectedRepayPriceUsd : 0;
   // Max amount constraints per action type (used to disable action button)
   const modalMaxAmount =
     actionModalMode === 'deposit'
@@ -2236,21 +2618,158 @@ const DashboardPage: NextPageWithLayout = () => {
           : actionModalAsset === 'usdc'
             ? availableWithdrawUsdc
             : availableWithdrawUsad
+        : actionModalMode === 'repay'
+          ? Math.min(privateBalanceModal, repaySuggestedModalHuman)
         : actionModalMode === 'borrow'
-          ? actionModalAsset === 'aleo'
-            ? availableBorrowAleo
-            : actionModalAsset === 'usdc'
-              ? availableBorrowUsdc
-              : availableBorrowUsad
+          ? modalBorrowPortfolioMax
           : debtBalanceModal;
 
   const remainingSupply = actionModalMode === 'withdraw'
-    ? Math.max(0, supplyBalanceModal - modalAmount)
+    ? Math.max(0, modalMaxAmount - modalAmount)
     : actionModalMode === 'deposit'
       ? supplyBalanceModal + modalAmount
       : actionModalMode === 'borrow'
         ? debtBalanceModal + modalAmount
-        : Math.max(0, debtBalanceModal - modalAmount);
+        : actionModalMode === 'repay'
+          ? remainingDebtSelectedAssetAfterRepay
+          : Math.max(0, debtBalanceModal - modalAmount);
+
+  // Estimated post-action portfolio for modal preview (V2 cross-collateral UX).
+  const postSupplyAleo =
+    actionModalMode === 'withdraw' && actionModalAsset === 'aleo'
+      ? Math.max(0, supplyBalanceAleo - modalAmount)
+      : actionModalMode === 'deposit' && actionModalAsset === 'aleo'
+        ? supplyBalanceAleo + modalAmount
+        : supplyBalanceAleo;
+  const postSupplyUsdc =
+    actionModalMode === 'withdraw' && actionModalAsset === 'usdc'
+      ? Math.max(0, supplyBalanceUsdc - modalAmount)
+      : actionModalMode === 'deposit' && actionModalAsset === 'usdc'
+        ? supplyBalanceUsdc + modalAmount
+        : supplyBalanceUsdc;
+  const postSupplyUsad =
+    actionModalMode === 'withdraw' && actionModalAsset === 'usad'
+      ? Math.max(0, supplyBalanceUsad - modalAmount)
+      : actionModalMode === 'deposit' && actionModalAsset === 'usad'
+        ? supplyBalanceUsad + modalAmount
+        : supplyBalanceUsad;
+
+  // Repay preview is cross-asset. Allocate repayBudgetUsd across debts in the same
+  // deterministic order as the program: ALEO -> USDCx -> USAD.
+  const repayPayAleoUsd = actionModalMode === 'repay' ? Math.min(repayBudgetUsd, debtUsdAleo) : 0;
+  const repayPayUsdcUsd = actionModalMode === 'repay'
+    ? Math.min(repayBudgetUsd - repayPayAleoUsd, debtUsdUsdc)
+    : 0;
+  const repayPayUsadUsd = actionModalMode === 'repay'
+    ? Math.max(0, repayBudgetUsd - repayPayAleoUsd - repayPayUsdcUsd)
+    : 0;
+
+  const repayPayAleoAsset =
+    ALEO_PRICE_USD > 0 ? repayPayAleoUsd / ALEO_PRICE_USD : 0;
+  const repayPayUsdcAsset =
+    USDCX_PRICE_USD > 0 ? repayPayUsdcUsd / USDCX_PRICE_USD : 0;
+  const repayPayUsadAsset =
+    USAD_PRICE_USD > 0 ? repayPayUsadUsd / USAD_PRICE_USD : 0;
+
+  const postDebtAleo =
+    actionModalMode === 'repay'
+      ? Math.max(0, borrowDebtAleo - repayPayAleoAsset)
+      : actionModalMode === 'borrow' && actionModalAsset === 'aleo'
+        ? borrowDebtAleo + modalAmount
+        : borrowDebtAleo;
+  const postDebtUsdc =
+    actionModalMode === 'repay'
+      ? Math.max(0, borrowDebtUsdc - repayPayUsdcAsset)
+      : actionModalMode === 'borrow' && actionModalAsset === 'usdc'
+        ? borrowDebtUsdc + modalAmount
+        : borrowDebtUsdc;
+  const postDebtUsad =
+    actionModalMode === 'repay'
+      ? Math.max(0, borrowDebtUsad - repayPayUsadAsset)
+      : actionModalMode === 'borrow' && actionModalAsset === 'usad'
+        ? borrowDebtUsad + modalAmount
+        : borrowDebtUsad;
+
+  const postWeightedCollateralUsd =
+    postSupplyAleo * ALEO_PRICE_USD * LTV_ALEO +
+    postSupplyUsdc * USDCX_PRICE_USD * LTV_USDCX +
+    postSupplyUsad * USAD_PRICE_USD * LTV_USAD;
+  const postTotalDebtUsd =
+    actionModalMode === 'repay'
+      ? remainingDebtUsdAfterRepay
+      : postDebtAleo * ALEO_PRICE_USD +
+        postDebtUsdc * USDCX_PRICE_USD +
+        postDebtUsad * USAD_PRICE_USD;
+  const postHealthFactor = postTotalDebtUsd > 0 ? postWeightedCollateralUsd / postTotalDebtUsd : null;
+
+  useEffect(() => {
+    if (!connected) return;
+    console.log('[Portfolio pricing] resolved prices', {
+      aleo: { usd: ALEO_PRICE_USD, source: ALEO_PRICE_SOURCE, raw: assetPriceAleo },
+      usdcx: { usd: USDCX_PRICE_USD, source: USDCX_PRICE_SOURCE, raw: assetPriceUsdc },
+      usad: { usd: USAD_PRICE_USD, source: USAD_PRICE_SOURCE, raw: assetPriceUsad },
+    });
+  }, [
+    connected,
+    ALEO_PRICE_USD,
+    USDCX_PRICE_USD,
+    USAD_PRICE_USD,
+    ALEO_PRICE_SOURCE,
+    USDCX_PRICE_SOURCE,
+    USAD_PRICE_SOURCE,
+    assetPriceAleo,
+    assetPriceUsdc,
+    assetPriceUsad,
+  ]);
+
+  useEffect(() => {
+    if (!connected) return;
+    console.log('[Portfolio estimate] collateral and weighted collateral', {
+      totalCollateralUsd,
+      weightedCollateralUsd,
+      breakdown: {
+        aleo: {
+          supply: supplyBalanceAleo,
+          priceUsd: ALEO_PRICE_USD,
+          collateralUsd: collateralUsdAleo,
+          ltv: LTV_ALEO,
+          weightedUsd: collateralUsdAleo * LTV_ALEO,
+        },
+        usdcx: {
+          supply: supplyBalanceUsdc,
+          priceUsd: USDCX_PRICE_USD,
+          collateralUsd: collateralUsdUsdc,
+          ltv: LTV_USDCX,
+          weightedUsd: collateralUsdUsdc * LTV_USDCX,
+        },
+        usad: {
+          supply: supplyBalanceUsad,
+          priceUsd: USAD_PRICE_USD,
+          collateralUsd: collateralUsdUsad,
+          ltv: LTV_USAD,
+          weightedUsd: collateralUsdUsad * LTV_USAD,
+        },
+      },
+    });
+  }, [
+    connected,
+    totalCollateralUsd,
+    weightedCollateralUsd,
+    supplyBalanceAleo,
+    supplyBalanceUsdc,
+    supplyBalanceUsad,
+    ALEO_PRICE_USD,
+    USDCX_PRICE_USD,
+    USAD_PRICE_USD,
+    collateralUsdAleo,
+    collateralUsdUsdc,
+    collateralUsdUsad,
+  ]);
+
+  if (view === 'flash') {
+    // Flash page intentionally hidden.
+    return null;
+  }
 
   if (view === 'markets') {
     return <MarketsView />;
@@ -2320,25 +2839,21 @@ const DashboardPage: NextPageWithLayout = () => {
                     <div className="flex items-center justify-between mt-1 text-sm text-base-content/70">
                       <span>
                       {actionModalMode === 'withdraw'
-                        ? 'Supply balance '
+                        ? 'Withdrawable (est.) '
                         : actionModalMode === 'deposit'
                           ? 'Wallet balance '
                           : actionModalMode === 'borrow'
-                            ? 'Available to borrow '
+                            ? 'Portfolio borrow max '
                             : 'Debt '}
                       {actionModalMode === 'withdraw'
-                        ? supplyBalanceModal.toFixed(7)
+                        ? modalMaxAmount.toFixed(7)
                         : actionModalMode === 'deposit'
                           ? privateBalanceModal.toFixed(7)
                           : actionModalMode === 'borrow'
-                            ? (
-                              actionModalAsset === 'aleo'
-                                ? availableBorrowAleo
-                                : actionModalAsset === 'usdc'
-                                  ? availableBorrowUsdc
-                                  : availableBorrowUsad
-                            ).toFixed(7)
-                            : debtBalanceModal.toFixed(7)}
+                            ? modalBorrowPortfolioMax.toFixed(7)
+                            : actionModalMode === 'repay'
+                              ? repaySuggestedModalHuman.toFixed(7)
+                              : debtBalanceModal.toFixed(7)}
                         {' '}
                         <button
                           type="button"
@@ -2346,17 +2861,17 @@ const DashboardPage: NextPageWithLayout = () => {
                           onClick={() => {
                             const maxVal =
                               actionModalMode === 'withdraw'
-                                ? supplyBalanceModal
+                                ? actionModalAsset === 'aleo'
+                                  ? availableWithdrawAleo
+                                  : actionModalAsset === 'usdc'
+                                    ? availableWithdrawUsdc
+                                    : availableWithdrawUsad
                                 : actionModalMode === 'deposit'
                                   ? privateBalanceModal
+                                  : actionModalMode === 'repay'
+                                    ? Math.min(privateBalanceModal, repaySuggestedModalHuman)
                                   : actionModalMode === 'borrow'
-                                    ? (
-                                      actionModalAsset === 'aleo'
-                                        ? availableBorrowAleo
-                                        : actionModalAsset === 'usdc'
-                                          ? availableBorrowUsdc
-                                          : availableBorrowUsad
-                                    )
+                                    ? modalBorrowPortfolioMax
                                     : debtBalanceModal;
                             setModalAmountInput(String(maxVal));
                             if (actionModalAsset === 'usdc') {
@@ -2377,7 +2892,13 @@ const DashboardPage: NextPageWithLayout = () => {
                     <div className="font-medium text-sm">Transaction overview</div>
                     <div className="flex justify-between text-sm">
                       <span className="text-base-content/70">
-                        {actionModalMode === 'withdraw' ? 'Remaining supply' : actionModalMode === 'deposit' ? 'Supply after' : actionModalMode === 'borrow' ? 'Debt after' : 'Remaining debt'}
+                        {actionModalMode === 'withdraw'
+                          ? 'Remaining withdrawable'
+                          : actionModalMode === 'deposit'
+                            ? 'Supply after'
+                            : actionModalMode === 'borrow'
+                              ? 'Debt after'
+                              : 'Remaining debt'}
                       </span>
                       <span>
                         {remainingSupply.toFixed(7)}{' '}
@@ -2388,6 +2909,29 @@ const DashboardPage: NextPageWithLayout = () => {
                             : 'USAD'}
                       </span>
                     </div>
+                    {(actionModalMode === 'borrow' || actionModalMode === 'withdraw' || actionModalMode === 'deposit' || actionModalMode === 'repay') ? (
+                      <>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-base-content/70">Est. weighted collateral (USD)</span>
+                          <span>${postWeightedCollateralUsd.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-base-content/70">Est. total debt (USD)</span>
+                          <span>${postTotalDebtUsd.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-base-content/70">Est. health factor</span>
+                          <span className={postHealthFactor != null && postHealthFactor < 1 ? 'text-error font-medium' : 'font-medium'}>
+                            {postHealthFactor == null ? 'Infinity' : postHealthFactor.toFixed(2)}
+                          </span>
+                        </div>
+                        {postHealthFactor != null && postHealthFactor < 1 ? (
+                          <div className="rounded-md bg-error/15 border border-error/30 px-2 py-1 text-xs text-error">
+                            Estimated health factor is below 1.0. This action is likely to fail on-chain due to cross-collateral safety checks.
+                          </div>
+                        ) : null}
+                      </>
+                    ) : null}
                   </div>
                   {(actionModalAsset === 'aleo'
                     ? amountError
@@ -2557,6 +3101,37 @@ const DashboardPage: NextPageWithLayout = () => {
               </button>
             </div>
 
+            <div className="rounded-xl bg-base-200 border border-base-300 p-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+                <div>
+                  <div className="text-base-content/60">Total collateral (USD)</div>
+                  <div className="font-semibold">${totalCollateralUsd.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-base-content/60">Total debt</div>
+                  <div className="font-semibold">${totalDebtUsd.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-base-content/60">Borrowable (est.)</div>
+                  <div className="font-semibold">${borrowableUsd.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-base-content/60">Health factor</div>
+                  <div className={`font-semibold ${healthFactor != null && healthFactor < 1 ? 'text-error' : 'text-success'}`}>
+                    {healthFactor == null ? 'Infinity' : healthFactor.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+              <p className="text-xs text-base-content/60 mt-2">
+                Portfolio estimates use on-chain `asset_price` from `xyra_lending_v2.aleo` when available, with env fallback
+                (`NEXT_PUBLIC_ALEO_PRICE_USD`, `NEXT_PUBLIC_USDCX_PRICE_USD`, `NEXT_PUBLIC_USAD_PRICE_USD`).
+                Final borrow/withdraw checks are enforced on-chain by `xyra_lending_v2.aleo`.
+              </p>
+              <p className="text-xs text-base-content/60 mt-1">
+                Prices in use — ALEO: ${ALEO_PRICE_USD.toFixed(4)} ({ALEO_PRICE_SOURCE}), USDCx: ${USDCX_PRICE_USD.toFixed(4)} ({USDCX_PRICE_SOURCE}), USAD: ${USAD_PRICE_USD.toFixed(4)} ({USAD_PRICE_SOURCE})
+              </p>
+            </div>
+
             <div className="grid gap-6 md:grid-cols-2">
               {/* Assets to supply — same design as Your supplies */}
               <div className="rounded-xl bg-base-200 p-5 space-y-4 border border-base-300">
@@ -2688,7 +3263,12 @@ const DashboardPage: NextPageWithLayout = () => {
                     <thead>
                       <tr>
                         <th className="text-base-content/70 font-medium">Asset</th>
-                        <th className="text-base-content/70 font-medium"><PrivateDataColumnHeader label="Available" /></th>
+                        <th className="text-base-content/70 font-medium">
+                          <span className="inline-flex items-center">
+                            <PrivateDataColumnHeader label="Available (est.)" />
+                            <InfoTooltip tip="Per-asset available borrow comes from on-chain cross-collateral headroom (USD) converted to this asset; vault-backed payouts are not limited by pool liquidity in the contract." />
+                          </span>
+                        </th>
                         <th className="text-base-content/70 font-medium">
                           <span className="inline-flex items-center">
                             APY
@@ -2707,7 +3287,7 @@ const DashboardPage: NextPageWithLayout = () => {
                           {isRefreshingState ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            availableBorrowAleo.toFixed(4)
+                            `${availableBorrowAleo.toFixed(4)} (~$${availableBorrowAleoUsd.toFixed(2)})`
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2732,7 +3312,7 @@ const DashboardPage: NextPageWithLayout = () => {
                           {isRefreshingUsdcState ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            availableBorrowUsdc.toFixed(4)
+                            `${availableBorrowUsdc.toFixed(4)} (~$${availableBorrowUsdcUsd.toFixed(2)})`
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2757,7 +3337,7 @@ const DashboardPage: NextPageWithLayout = () => {
                           {isRefreshingUsadState ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            availableBorrowUsad.toFixed(4)
+                            `${availableBorrowUsad.toFixed(4)} (~$${availableBorrowUsadUsd.toFixed(2)})`
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2779,6 +3359,10 @@ const DashboardPage: NextPageWithLayout = () => {
                     </tbody>
                   </table>
                 </div>
+                <p className="text-xs text-base-content/60">
+                  Borrowable is one shared portfolio USD headroom. For each asset, UI shows the same headroom converted to that
+                  asset. Final validation is enforced on-chain.
+                </p>
               </div>
               {/* Your supplies */}
               <div className="rounded-xl bg-base-200 p-5 space-y-4 border border-base-300">
@@ -2788,7 +3372,12 @@ const DashboardPage: NextPageWithLayout = () => {
                     <thead>
                       <tr>
                         <th className="text-base-content/70 font-medium">Asset</th>
-                        <th className="text-base-content/70 font-medium"><PrivateDataColumnHeader label="Balance" /></th>
+                        <th className="text-base-content/70 font-medium">
+                          <span className="inline-flex items-center">
+                            <PrivateDataColumnHeader label="Available (est.)" />
+                            <InfoTooltip tip="Withdraw is cross-asset: you can withdraw any output asset against total portfolio collateral. This shows the on-chain withdraw cap expressed in this output asset (with ~$ value)." />
+                          </span>
+                        </th>
                         <th className="text-base-content/70 font-medium">APY</th>
                         <th className="text-base-content/70 font-medium">Actions</th>
                       </tr>
@@ -2800,7 +3389,11 @@ const DashboardPage: NextPageWithLayout = () => {
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            supplyBalanceAleo.toFixed(4)
+                            <div className="leading-tight">
+                              <div className="font-mono">
+                                {availableWithdrawAleo.toFixed(4)} (~$ {portfolioWithdrawUsd.toFixed(2)})
+                              </div>
+                            </div>
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2815,7 +3408,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                         <td>
                           <PrivateActionButton
-                            onClick={() => openActionModal('withdraw', 'aleo', supplyBalanceAleo)}
+                            onClick={() => openActionModal('withdraw', 'aleo', availableWithdrawAleo)}
                             disabled={loading || !connected || walletBalancesLoading || availableWithdrawAleo <= 0}
                           >
                             Withdraw
@@ -2828,7 +3421,11 @@ const DashboardPage: NextPageWithLayout = () => {
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            supplyBalanceUsdc.toFixed(4)
+                            <div className="leading-tight">
+                              <div className="font-mono">
+                                {availableWithdrawUsdc.toFixed(4)} (~$ {portfolioWithdrawUsd.toFixed(2)})
+                              </div>
+                            </div>
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2843,7 +3440,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                         <td>
                           <PrivateActionButton
-                            onClick={() => openActionModal('withdraw', 'usdc', supplyBalanceUsdc)}
+                            onClick={() => openActionModal('withdraw', 'usdc', availableWithdrawUsdc)}
                             disabled={loading || !connected || walletBalancesLoading || availableWithdrawUsdc <= 0}
                           >
                             Withdraw
@@ -2856,7 +3453,11 @@ const DashboardPage: NextPageWithLayout = () => {
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            supplyBalanceUsad.toFixed(4)
+                            <div className="leading-tight">
+                              <div className="font-mono">
+                                {availableWithdrawUsad.toFixed(4)} (~$ {portfolioWithdrawUsd.toFixed(2)})
+                              </div>
+                            </div>
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2870,7 +3471,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                         <td>
                           <PrivateActionButton
-                            onClick={() => openActionModal('withdraw', 'usad', supplyBalanceUsad)}
+                            onClick={() => openActionModal('withdraw', 'usad', availableWithdrawUsad)}
                             disabled={loading || !connected || walletBalancesLoading || availableWithdrawUsad <= 0}
                           >
                             Withdraw
@@ -2882,15 +3483,33 @@ const DashboardPage: NextPageWithLayout = () => {
                 </div>
               </div>
 
-              {/* Your borrows */}
+              {/* Assets to repay (cross-asset) */}
               <div className="rounded-xl bg-base-200 p-5 space-y-4 border border-base-300">
-                <h2 className="text-lg font-semibold text-base-content">Your borrows</h2>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-lg font-semibold text-base-content">Assets to repay</h2>
+                  <div className="text-sm text-base-content/70">
+                    Portfolio debt:{' '}
+                    <span className="font-mono font-medium">
+                      $
+                      {(
+                        chainBorrowCaps != null
+                          ? Math.max(0, Number(chainBorrowCaps.totalDebtUsd) / 1_000_000)
+                          : Math.max(0, totalDebtUsd)
+                      ).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="table table-sm">
                     <thead>
                       <tr>
                         <th className="text-base-content/70 font-medium">Asset</th>
-                        <th className="text-base-content/70 font-medium"><PrivateDataColumnHeader label="Debt" /></th>
+                        <th className="text-base-content/70 font-medium">
+                          <span className="inline-flex items-center">
+                            <PrivateDataColumnHeader label="Available (est.)" />
+                            <InfoTooltip tip="Repay is cross-asset: you can repay your total portfolio debt using any asset. This shows your total portfolio debt expressed in this repay asset (same ~$ value across rows)." />
+                          </span>
+                        </th>
                         <th className="text-base-content/70 font-medium">APY</th>
                         <th className="text-base-content/70 font-medium">Actions</th>
                       </tr>
@@ -2902,7 +3521,11 @@ const DashboardPage: NextPageWithLayout = () => {
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            borrowDebtAleo.toFixed(4)
+                            <div className="leading-tight">
+                              <div className="font-mono">
+                                {Math.max(0, repaySuggestedAleoHuman).toFixed(4)} (~$ {portfolioDebtUsdForRepay.toFixed(2)})
+                              </div>
+                            </div>
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2917,8 +3540,17 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                         <td>
                           <PrivateActionButton
-                            onClick={() => openActionModal('repay', 'aleo', borrowDebtAleo)}
-                            disabled={loading || !connected || walletBalancesLoading || borrowDebtAleo <= 0}
+                            onClick={() =>
+                              openActionModal(
+                                'repay',
+                                'aleo',
+                                Math.min(
+                                  Math.max(0, repaySuggestedAleoHuman),
+                                  privateAleoBalance ?? 0,
+                                ),
+                              )
+                            }
+                            disabled={loading || !connected || walletBalancesLoading || !hasAnyDebt}
                           >
                             Repay
                           </PrivateActionButton>
@@ -2930,7 +3562,11 @@ const DashboardPage: NextPageWithLayout = () => {
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            borrowDebtUsdc.toFixed(4)
+                            <div className="leading-tight">
+                              <div className="font-mono">
+                                {Math.max(0, repaySuggestedUsdcHuman).toFixed(4)} (~$ {portfolioDebtUsdForRepay.toFixed(2)})
+                              </div>
+                            </div>
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2945,8 +3581,17 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                         <td>
                           <PrivateActionButton
-                            onClick={() => openActionModal('repay', 'usdc', borrowDebtUsdc)}
-                            disabled={loading || !connected || walletBalancesLoading || borrowDebtUsdc <= 0}
+                            onClick={() =>
+                              openActionModal(
+                                'repay',
+                                'usdc',
+                                Math.min(
+                                  Math.max(0, repaySuggestedUsdcHuman),
+                                  privateUsdcBalance ?? 0,
+                                ),
+                              )
+                            }
+                            disabled={loading || !connected || walletBalancesLoading || !hasAnyDebt}
                           >
                             Repay
                           </PrivateActionButton>
@@ -2958,7 +3603,11 @@ const DashboardPage: NextPageWithLayout = () => {
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
                           ) : (
-                            borrowDebtUsad.toFixed(4)
+                            <div className="leading-tight">
+                              <div className="font-mono">
+                                {Math.max(0, repaySuggestedUsadHuman).toFixed(4)} (~$ {portfolioDebtUsdForRepay.toFixed(2)})
+                              </div>
+                            </div>
                           )}
                         </td>
                         <td className="text-base-content">
@@ -2970,8 +3619,17 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                         <td>
                           <PrivateActionButton
-                            onClick={() => openActionModal('repay', 'usad', borrowDebtUsad)}
-                            disabled={loading || !connected || walletBalancesLoading || borrowDebtUsad <= 0}
+                            onClick={() =>
+                              openActionModal(
+                                'repay',
+                                'usad',
+                                Math.min(
+                                  Math.max(0, repaySuggestedUsadHuman),
+                                  privateUsadBalance ?? 0,
+                                ),
+                              )
+                            }
+                            disabled={loading || !connected || walletBalancesLoading || !hasAnyDebt}
                           >
                             Repay
                           </PrivateActionButton>

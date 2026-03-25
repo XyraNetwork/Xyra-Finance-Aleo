@@ -99,8 +99,17 @@ npm run dev
 ```bash
 cd program
 leo build
-leo test
 ```
+
+**Lending math unit tests** (no token dependencies; mirrors `finalize_borrow` USD checks in `src/main.leo`):
+
+```bash
+cd program/lending_math_tests
+leo test --offline
+# or from repo root: npm run test:lending-math
+```
+
+Running `leo test` from `program/` pulls `credits` / stablecoin deps and may fail while loading the local ledger; use `lending_math_tests` for CI-style checks.
 
 ### 4. Supabase
 

@@ -1,7 +1,7 @@
 // _app.tsx
 import type { AppProps } from 'next/app';
 import type { NextPageWithLayout } from '@/types';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Head from 'next/head';
 import { Hydrate, QueryClient, QueryClientProvider } from 'react-query';
 import { ReactQueryDevtools } from 'react-query/devtools';
@@ -32,6 +32,7 @@ import {
   USAD_TOKEN_PROGRAM_ID,
 } from '@/types';
 import { WalletPersistence } from '@/components/WalletPersistence';
+import { installDevBorrowDebug } from '@/utils/devBorrowDebug';
 
 // Initialize the wallet adapters outside the component
 // Currently only Shield Wallet is enabled in the connect modal.
@@ -45,6 +46,10 @@ type AppPropsWithLayout = AppProps & {
 function CustomApp({ Component, pageProps }: AppPropsWithLayout) {
   const [queryClient] = useState(() => new QueryClient());
   const getLayout = Component.getLayout ?? ((page) => page);
+
+  useEffect(() => {
+    installDevBorrowDebug();
+  }, []);
 
   return (
     <>

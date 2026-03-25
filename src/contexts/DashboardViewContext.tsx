@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, useCallback } from 'react';
 
-export type DashboardView = 'dashboard' | 'markets' | 'docs';
+export type DashboardView = 'dashboard' | 'markets' | 'docs' | 'flash';
 
 type ContextValue = {
   view: DashboardView;

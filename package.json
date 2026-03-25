@@ -16,6 +16,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test:lending-math": "cd program/lending_math_tests && leo test --offline",
     "prepare": "husky install"
   },
   "dependencies": {

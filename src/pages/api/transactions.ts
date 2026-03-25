@@ -6,7 +6,7 @@ import { getSupabaseClient } from '@/lib/supabase';
 type InsertBody = {
   wallet_address: string;
   tx_id: string;
-  type: 'deposit' | 'withdraw' | 'borrow' | 'repay';
+  type: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'flash_loan';
   asset: 'aleo' | 'usdcx' | 'usad';
   amount: number;
   program_id?: string;
@@ -72,7 +72,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         error: 'Missing required fields: wallet_address, tx_id, type, asset, amount.',
       });
     }
-    const validTypes = ['deposit', 'withdraw', 'borrow', 'repay'];
+    const validTypes = ['deposit', 'withdraw', 'borrow', 'repay', 'flash_loan'];
     const validAssets = ['aleo', 'usdcx', 'usad'];
     if (!validTypes.includes(type) || !validAssets.includes(asset)) {
       return res.status(400).json({ error: 'Invalid type or asset.' });

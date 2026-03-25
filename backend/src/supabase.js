@@ -60,7 +60,7 @@ export function getPendingVaultTransactions(limit = 20) {
   const q = supabase
     .from('transaction_history')
     .select('wallet_address, tx_id, type, asset, amount, created_at')
-    .in('type', ['withdraw', 'borrow'])
+    .in('type', ['withdraw', 'borrow', 'flash_loan'])
     .is('vault_tx_id', null)
     .or('status.is.null,status.eq.vault_pending')
     .order('created_at', { ascending: true })
