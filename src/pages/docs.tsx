@@ -1,9 +1,16 @@
 import type { NextPageWithLayout } from '@/types';
 import Layout from '@/layouts/_layout';
-import Link from 'next/link';
-import { LENDING_POOL_PROGRAM_ID } from '@/components/aleo/rpc';
+import {
+  LENDING_POOL_PROGRAM_ID,
+  USDC_LENDING_POOL_PROGRAM_ID,
+  USAD_LENDING_POOL_PROGRAM_ID,
+} from '@/components/aleo/rpc';
 
 const DocsPage: NextPageWithLayout = () => {
+  const unifiedPools =
+    LENDING_POOL_PROGRAM_ID === USDC_LENDING_POOL_PROGRAM_ID &&
+    LENDING_POOL_PROGRAM_ID === USAD_LENDING_POOL_PROGRAM_ID;
+
   return (
     <div className="w-full max-w-5xl mx-auto px-4 pb-12 pt-16 sm:pt-20 space-y-10 text-primary-content">
       <header className="space-y-3">
@@ -11,42 +18,59 @@ const DocsPage: NextPageWithLayout = () => {
           Documentation
         </p>
         <h1 className="text-3xl sm:text-4xl font-bold text-primary-content">
-          Aave‑Aleo Dashboard & Protocol Docs
+          Xyra Finance — unified lending &amp; docs
         </h1>
         <p className="text-base text-primary-content/80 max-w-2xl">
-          This page describes how the current Aave‑style lending dashboard on Aleo works:
-          wallet behavior, privacy model, transaction flows, Supabase history, and the
-          vault backend used for withdraws and borrows.
+          This page describes the current testnet app: a <strong>single</strong> lending program (
+          <span className="font-mono">xyra_lending_v6.aleo</span> by default) with{' '}
+          <strong>three assets</strong> (ALEO credits, USDCx, USAD),{' '}
+          <strong>cross‑asset collateral and borrowing</strong> in USD terms on-chain, the
+          dashboard/Markets UX, wallet permissions, Supabase history, and the vault backend for
+          payouts.
         </p>
       </header>
 
       <section className="space-y-3">
-        <h2 className="text-xl font-semibold text-primary-content">1. High‑level overview</h2>
+        <h2 className="text-xl font-semibold text-primary-content">1. High-level overview</h2>
         <div className="rounded-xl bg-base-200 border border-base-300 p-5 space-y-3 text-sm leading-relaxed text-base-content">
           <p>
-            The app is an Aave‑style dashboard for the Aleo testnet. It currently supports:
+            The app is an Aave-style experience on Aleo testnet, wired to one pool program that
+            tracks multiple assets and enforces a single health constraint across them.
           </p>
           <ul className="list-disc list-inside space-y-1">
             <li>
-              <span className="font-semibold">Two views:</span> <span className="font-mono">Dashboard</span>{' '}
-              and <span className="font-mono">Markets</span> as tabs on the same route{' '}
-              <span className="font-mono">/dashboard</span>.
+              <span className="font-semibold">Views:</span>{' '}
+              <span className="font-mono">Dashboard</span>, <span className="font-mono">Markets</span>, and{' '}
+              <span className="font-mono">Docs</span> as tabs on <span className="font-mono">/dashboard</span>{' '}
+              (via <span className="font-mono">DashboardViewProvider</span>).
             </li>
             <li>
-              <span className="font-semibold">Wallet connection</span> via Leo/Shield compatible
-              wallets using the Provable wallet adaptor.
+              <span className="font-semibold">Wallet:</span> Shield wallet (Provable adapter) — connect
+              from the header on any route except the landing page.
             </li>
             <li>
-              <span className="font-semibold">Lending pool actions</span> for ALEO and USDCx test
-              pools: deposit, withdraw, borrow, repay and interest accrual.
+              <span className="font-semibold">Assets in one program:</span> deposits and borrows for{' '}
+              <span className="font-mono">credits.aleo</span> (ALEO),{' '}
+              <span className="font-mono">test_usdcx_stablecoin.aleo</span> (USDCx), and{' '}
+              <span className="font-mono">test_usad_stablecoin.aleo</span> (USAD), each keyed as{' '}
+              <span className="font-mono">0field</span>, <span className="font-mono">1field</span>,{' '}
+              <span className="font-mono">2field</span> in the pool.
             </li>
             <li>
-              <span className="font-semibold">Private data UX:</span> balances and actions are
-              treated as private, with clear icons and copy.
+              <span className="font-semibold">Cross-asset lending:</span> borrow and repay checks use{' '}
+              <strong>oracle prices</strong> (<span className="font-mono">asset_price</span> mapping,{' '}
+              <span className="font-mono">PRICE_SCALE</span> = 1e6) and per-asset LTV so total debt (USD)
+              must stay within total weighted collateral (USD). The frontend mirrors caps with helpers
+              like <span className="font-mono">getCrossCollateralBorrowCapsFromChain</span> / withdraw caps.
             </li>
             <li>
-              <span className="font-semibold">Transaction history</span> stored in Supabase and
-              fetched by wallet address, including optional vault transfer hashes.
+              <span className="font-semibold">Private data UX:</span> shield icons and tooltips on
+              sensitive columns and actions.
+            </li>
+            <li>
+              <span className="font-semibold">Transaction history:</span> Supabase{' '}
+              <span className="font-mono">transaction_history</span> by wallet address; optional vault tx
+              links after the pool tx finalizes.
             </li>
           </ul>
         </div>
@@ -57,296 +81,286 @@ const DocsPage: NextPageWithLayout = () => {
         <div className="rounded-xl bg-base-200 border border-base-300 p-5 space-y-3 text-sm leading-relaxed text-base-content">
           <ul className="list-disc list-inside space-y-1">
             <li>
-              Wallets integrate via{' '}
-              <span className="font-mono">@provablehq/aleo-wallet-adaptor-react</span> and the
-              <span className="font-mono">WalletMultiButton</span> UI.
+              Integration via{' '}
+              <span className="font-mono">@provablehq/aleo-wallet-adaptor-react</span> and{' '}
+              <span className="font-mono">WalletMultiButton</span>.
             </li>
             <li>
-              When connected, the app uses <span className="font-mono">address</span> as the
-              public key for:
-              <ul className="list-disc list-inside ml-4 space-y-1">
-                <li>querying the lending pool user position;</li>
-                <li>submitting transactions via <span className="font-mono">executeTransaction</span>;</li>
-                <li>storing and fetching Supabase transaction history by wallet address.</li>
-              </ul>
+              <span className="font-semibold">Programs permission list</span> comes from{' '}
+              <span className="font-mono">getWalletConnectProgramIds()</span> in{' '}
+              <span className="font-mono">src/types/index.ts</span>: pool program id(s), USDCx stack
+              programs (merkle tree, multisig, freezelist, token), USAD token, and{' '}
+              <span className="font-mono">credits.aleo</span>. The list is <strong>deduplicated</strong> so
+              when USDC/USAD pools default to the same ID as the main lending program, the wallet does not
+              show duplicates.
             </li>
             <li>
-              Basic persistence is implemented with <span className="font-mono">sessionStorage</span>{' '}
-              so that navigating between Dashboard and Markets does not drop the wallet connection
-              state in the UI.
+              <span className="font-mono">decryptPermission</span> is set for automatic record decryption
+              where the adapter supports it (e.g. <span className="font-mono">UserActivity</span> records).
+            </li>
+            <li>
+              Connected <span className="font-mono">address</span> is used for RPC position reads,{' '}
+              <span className="font-mono">executeTransaction</span>, and Supabase history filters.
+            </li>
+            <li>
+              <span className="font-mono">WalletPersistence</span> uses{' '}
+              <span className="font-mono">sessionStorage</span> so navigating between Dashboard/Markets/Docs
+              does not drop the connection in normal use.
             </li>
           </ul>
         </div>
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xl font-semibold text-primary-content">3. Dashboard &amp; Markets views</h2>
+        <h2 className="text-xl font-semibold text-primary-content">3. Dashboard &amp; Markets</h2>
         <div className="rounded-xl bg-base-200 border border-base-300 p-5 space-y-3 text-sm leading-relaxed text-base-content">
           <ul className="list-disc list-inside space-y-1">
             <li>
-              Both views live on <span className="font-mono">/dashboard</span> and are switched
-              via context from <span className="font-mono">DashboardViewProvider</span>.
+              <span className="font-semibold">Dashboard</span> shows a unified summary (total collateral,
+              borrowable estimate, total debt, health factor) and <strong>per-asset</strong> panels for
+              ALEO, USDCx, and USAD: supplies, borrows, APYs, wallet balances, and actions (Supply,
+              Withdraw, Borrow, Repay). Actions use the same pool program; stablecoin flows use Merkle
+              proofs where the token program requires them.
             </li>
             <li>
-              <span className="font-semibold">Dashboard</span> shows:
-              <ul className="list-disc list-inside ml-4 space-y-1">
-                <li>Overall pool stats (total supplied, total borrowed, utilization, APYs).</li>
-                <li>Your supplies, borrows, available balance, and debt.</li>
-                <li>Action buttons (Supply, Borrow, Withdraw, Repay) with a shield icon to
-                    indicate private operations.</li>
-              </ul>
+              <span className="font-semibold">Cross-asset checks:</span> before borrow/withdraw, the UI can
+              consult on-chain caps and optional <span className="font-mono">/vault-balances</span> so users
+              do not submit transactions that would fail for liquidity or health.
             </li>
             <li>
-              <span className="font-semibold">Markets</span> shows:
-              <ul className="list-disc list-inside ml-4 space-y-1">
-                <li>Public market data for ALEO and USDCx pools.</li>
-                <li>No wallet connect button and no “no wallet required” copy.</li>
-              </ul>
+              <span className="font-semibold">Markets</span> shows public on-chain aggregates (totals,
+              utilization, APYs) and a reserve overview table including vault wallet balances and USD
+              estimates from on-chain <span className="font-mono">asset_price</span> when available.
+            </li>
+            <li>
+              Wallet remains available from the global header while on <span className="font-mono">/dashboard</span>.
             </li>
           </ul>
         </div>
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xl font-semibold text-primary-content">3b. Lending pool programs &amp; APY model</h2>
+        <h2 className="text-xl font-semibold text-primary-content">
+          4. Lending program: <span className="font-mono">xyra_lending_v6.aleo</span>
+        </h2>
         <div className="rounded-xl bg-base-200 border border-base-300 p-5 space-y-3 text-sm leading-relaxed text-base-content">
           <p>
-            The dashboard talks to <span className="font-mono">two</span> Aleo lending pool programs, one for ALEO
-            and one for USDC, both using the same utilization‑based interest and APY model.
+            <span className="font-semibold">Source:</span>{' '}
+            <span className="font-mono">program/src/main.leo</span> (deploy name{' '}
+            <span className="font-mono">xyra_lending_v6.aleo</span>). The live ID is configured with{' '}
+            <span className="font-mono">NEXT_PUBLIC_LENDING_POOL_PROGRAM_ID</span> (see{' '}
+            <span className="font-mono">src/types/index.ts</span> as <span className="font-mono">BOUNTY_PROGRAM_ID</span>
+            ).
           </p>
-          <ul className="list-disc list-inside space-y-1">
+          <p>
+            <span className="font-semibold">Single program, three logical assets:</span> mappings are keyed
+            by <span className="font-mono">asset_id</span> (<span className="font-mono">0field</span> ALEO,{' '}
+            <span className="font-mono">1field</span> USDCx, <span className="font-mono">2field</span> USAD).
+            Each asset has its own supply/borrow indices, utilization, fees, LTV, liquidation parameters,
+            and price for USD normalization.
+          </p>
+          <p>
+            <span className="font-semibold">Cross-asset borrow health (on-chain):</span>{' '}
+            <span className="font-mono">finalize_borrow</span> loads all three positions, converts supplies
+            to <strong>weighted collateral USD</strong> and borrows to <strong>debt USD</strong> using{' '}
+            <span className="font-mono">asset_price</span> and LTV, then requires{' '}
+            <span className="font-mono">total_debt + new_borrow ≤ total_weighted_collateral</span>.{' '}
+            <span className="font-mono">finalize_repay_any</span> similarly aggregates debt across assets for
+            repay routing.
+          </p>
+          <p>
+            <span className="font-semibold">Frontend program IDs:</span>
+          </p>
+          <ul className="list-disc list-inside ml-2 space-y-1 font-mono text-xs break-all">
             <li>
-              <span className="font-semibold">Aleo pool program</span>{' '}
-              (<span className="font-mono">{LENDING_POOL_PROGRAM_ID}</span>): handles ALEO deposits, withdraws,
-              borrows, and repays. Program id is configured via{' '}
-              <span className="font-mono">NEXT_PUBLIC_LENDING_POOL_PROGRAM_ID</span> (see{' '}
-              <span className="font-mono">.env</span> / <span className="font-mono">src/types/index.ts</span>), and the Leo source lives in{' '}
-              <span className="font-mono">program/src/main.leo</span>.
+              ALEO pool: <span className="text-base-content">{LENDING_POOL_PROGRAM_ID}</span>
             </li>
             <li>
-              <span className="font-semibold">USDCx pool program</span>{' '}
-              (<span className="font-mono">lending_pool_usdce_v86.aleo</span>): mirrors the same logic for the
-              USDCx test token, with scaled balances. Its id is{' '}
-              <span className="font-mono">USDC_POOL_PROGRAM_ID</span> in{' '}
-              <span className="font-mono">src/types/index.ts</span>, with Leo code in{' '}
-              <span className="font-mono">programusdc/src/main.leo</span>.
+              USDCx pool: <span className="text-base-content">{USDC_LENDING_POOL_PROGRAM_ID}</span>
+            </li>
+            <li>
+              USAD pool: <span className="text-base-content">{USAD_LENDING_POOL_PROGRAM_ID}</span>
             </li>
           </ul>
+          {unifiedPools ? (
+            <p className="pt-1 text-xs text-base-content/80">
+              All three resolve to the <strong>same</strong> program ID (unified deployment). Optional env{' '}
+              <span className="font-mono">NEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID</span> /{' '}
+              <span className="font-mono">NEXT_PUBLIC_USAD_LENDING_POOL_PROGRAM_ID</span> exists only if you
+              split deployments; otherwise omit them to avoid duplicate wallet permissions.
+            </p>
+          ) : (
+            <p className="pt-1 text-xs text-base-content/80">
+              USDC/USAD IDs differ from the main ID — you are using separate deployments for some routes.
+            </p>
+          )}
 
           <p className="pt-2">
-            Both programs share the same Aave‑style rate model (documented in{' '}
-            <span className="font-mono">program/docs/INTEREST_APY_DESIGN.md</span> and implemented in{' '}
-            <span className="font-mono">src/components/aleo/rpc.ts</span>):
+            <span className="font-semibold">APY model:</span> utilization-based rates per asset (see{' '}
+            <span className="font-mono">program/docs/INTEREST_APY_DESIGN.md</span>). The frontend computes
+            display APYs in <span className="font-mono">src/components/aleo/rpc.ts</span> (e.g.{' '}
+            <span className="font-mono">computeAleoPoolAPY</span>,{' '}
+            <span className="font-mono">computeUsdcPoolAPY</span>,{' '}
+            <span className="font-mono">computeUsadPoolAPY</span>) from on-chain totals and parameters.
           </p>
-          <ul className="list-disc list-inside ml-4 space-y-1">
-            <li>
-              <span className="font-semibold">Utilization</span>{' '}
-              <span className="font-mono">u = total_borrowed / total_supplied</span> drives rates
-              (0–100%).
-            </li>
-            <li>
-              <span className="font-semibold">Borrow rate per block</span> increases with utilization:
-              base rate + slope × <span className="font-mono">u</span>.
-            </li>
-            <li>
-              <span className="font-semibold">Supply rate per block</span> is the borrow rate multiplied
-              by utilization and reduced by the reserve factor:
-              <span className="font-mono"> supply_rate ≈ borrow_rate × u × (1 − reserve_factor)</span>.
-            </li>
-            <li>
-              <span className="font-semibold">APY</span> is derived from the per‑block rate and the
-              expected number of blocks per year (in the frontend we compute
-              <span className="font-mono"> borrowAPY</span> and
-              <span className="font-mono"> supplyAPY</span> in{' '}
-              <span className="font-mono">computeAleoPoolAPY</span> /
-              <span className="font-mono">computeUsdcPoolAPY</span>).
-            </li>
-          </ul>
         </div>
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xl font-semibold text-primary-content">4. Privacy model in the UI</h2>
+        <h2 className="text-xl font-semibold text-primary-content">5. Privacy model in the UI</h2>
         <div className="rounded-xl bg-base-200 border border-base-300 p-5 space-y-3 text-sm leading-relaxed text-base-content">
           <ul className="list-disc list-inside space-y-1">
             <li>
-              Columns like <span className="font-mono">Wallet balance</span>,{' '}
-              <span className="font-mono">Available</span>,{' '}
-              <span className="font-mono">Balance</span>, and{' '}
-              <span className="font-mono">Debt</span> are treated as private values.
+              Columns such as wallet balance, available, position balance, and debt are labeled as private
+              where appropriate.
             </li>
             <li>
-              These headers use a <span className="font-mono">PrivateDataColumnHeader</span>{' '}
-              component with a shield icon and tooltip explaining that data is private.
+              <span className="font-mono">PrivateDataColumnHeader</span> adds a shield icon and tooltip.
             </li>
             <li>
-              Action buttons (Supply, Borrow, Withdraw, Repay) use{' '}
-              <span className="font-mono">PrivateActionButton</span> to show a shield icon and
-              consistent private‑transaction styling.
+              <span className="font-mono">PrivateActionButton</span> styles supply/borrow/withdraw/repay with a
+              consistent private-transaction affordance.
             </li>
             <li>
-              APY tooltips are shown only where helpful (e.g. your supplies / borrows), and not
-              repeated in every market row.
+              <span className="font-mono">InfoTooltip</span> explains APY and other fields without cluttering
+              every row.
             </li>
           </ul>
         </div>
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xl font-semibold text-primary-content">5. Transaction lifecycle</h2>
+        <h2 className="text-xl font-semibold text-primary-content">6. Transaction lifecycle</h2>
         <div className="rounded-xl bg-base-200 border border-base-300 p-5 space-y-3 text-sm leading-relaxed text-base-content">
           <ol className="list-decimal list-inside space-y-2">
+            <li>User starts an action from the modal (Supply / Borrow / Repay / Withdraw) for the selected asset.</li>
             <li>
-              User initiates an action (Supply / Borrow / Repay / Withdraw) from the action modal.
+              <span className="font-mono">components/aleo/rpc.ts</span> builds the transition and calls the
+              wallet&apos;s <span className="font-mono">executeTransaction</span>; a temporary tx id is returned.
             </li>
             <li>
-              The app calls the appropriate helper from <span className="font-mono">components/aleo/rpc.ts</span>{' '}
-              which uses the wallet&apos;s <span className="font-mono">executeTransaction</span>{' '}
-              and returns a temporary transaction id.
+              The UI polls <span className="font-mono">transactionStatus</span> until finalized, then uses the
+              final on-chain id for explorer links and Supabase.
             </li>
             <li>
-              The UI shows a “Processing…” state while polling{' '}
-              <span className="font-mono">transactionStatus(tempId)</span> for a{' '}
-              <span className="font-mono">Finalized</span> /{' '}
-              <span className="font-mono">Accepted</span> result.
+              For <strong>borrow</strong> and <strong>withdraw</strong> of tokens paid from the protocol vault,
+              the pool transaction may finalize first; the app records the row in Supabase (optionally with{' '}
+              <span className="font-mono">vault_tx_id</span> pending). The backend watcher completes vault
+              transfers (ALEO credits, USDCx, USAD) and updates Supabase.
             </li>
             <li>
-              When finalized, the code extracts the final on‑chain transaction hash (when
-              available) from <span className="font-mono">statusResult.transactionId</span> and
-              uses that for:
-              <ul className="list-disc list-inside ml-4 space-y-1">
-                <li>the “View in explorer” link in the modal;</li>
-                <li>the “Last transaction” panel at the bottom of the dashboard;</li>
-                <li>the main <span className="font-mono">tx_id</span> and{' '}
-                    <span className="font-mono">explorer_url</span> stored in Supabase.</li>
-              </ul>
-            </li>
-            <li>
-              For <span className="font-semibold">borrow</span> and{' '}
-              <span className="font-semibold">withdraw</span>, after the main tx finalizes the
-              frontend only saves the row to Supabase (with <span className="font-mono">vault_tx_id</span> null).
-              The backend watcher picks up pending rows and performs the vault transfer; no frontend call to the backend is made.
+              Accrue-interest actions call <span className="font-mono">accrue_interest</span> with the correct{' '}
+              <span className="font-mono">asset_id</span> field literal per asset.
             </li>
           </ol>
         </div>
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xl font-semibold text-primary-content">6. Supabase transaction history</h2>
+        <h2 className="text-xl font-semibold text-primary-content">7. Supabase transaction history</h2>
         <div className="rounded-xl bg-base-200 border border-base-300 p-5 space-y-3 text-sm leading-relaxed text-base-content">
-          <h3 className="font-semibold">Schema</h3>
+          <h3 className="font-semibold">Schema (summary)</h3>
           <p>
-            Transactions are stored in a single table{' '}
-            <span className="font-mono">transaction_history</span> with the most important
-            columns:
+            Table <span className="font-mono">transaction_history</span> — key columns:
           </p>
           <ul className="list-disc list-inside ml-4 space-y-1">
-            <li><span className="font-mono">wallet_address</span> – Aleo address (used for queries).</li>
-            <li><span className="font-mono">tx_id</span> – main lending pool tx hash.</li>
-            <li><span className="font-mono">type</span> – one of <span className="font-mono">'deposit' | 'withdraw' | 'borrow' | 'repay'</span>.</li>
+            <li><span className="font-mono">wallet_address</span> — Aleo address.</li>
+            <li><span className="font-mono">tx_id</span> — main pool transaction hash.</li>
             <li>
-              <span className="font-mono">asset</span> –{' '}
-              <span className="font-mono">'aleo'</span>, <span className="font-mono">'usdcx'</span>, or{' '}
-              <span className="font-mono">'usad'</span>.
+              <span className="font-mono">type</span> — <span className="font-mono">deposit</span> |{' '}
+              <span className="font-mono">withdraw</span> | <span className="font-mono">borrow</span> |{' '}
+              <span className="font-mono">repay</span>.
             </li>
-            <li><span className="font-mono">amount</span> – numeric amount (up to 6 decimals).</li>
-            <li><span className="font-mono">explorer_url</span> – Provable explorer URL for the main tx.</li>
-            <li><span className="font-mono">vault_tx_id</span> – (optional) vault/backend tx id for withdraw/borrow.</li>
-            <li><span className="font-mono">vault_explorer_url</span> – (optional) explorer URL for the vault tx.</li>
-            <li><span className="font-mono">created_at</span> – server timestamp.</li>
+            <li>
+              <span className="font-mono">asset</span> — <span className="font-mono">aleo</span>,{' '}
+              <span className="font-mono">usdcx</span>, or <span className="font-mono">usad</span>.
+            </li>
+            <li><span className="font-mono">amount</span>, <span className="font-mono">explorer_url</span>.</li>
+            <li>
+              <span className="font-mono">vault_tx_id</span> / <span className="font-mono">vault_explorer_url</span>{' '}
+              when the vault payout completes.
+            </li>
+            <li><span className="font-mono">created_at</span>.</li>
           </ul>
           <p>
-            RLS is enabled and the app uses the Supabase{' '}
-            <span className="font-mono">Publishable</span> key on the frontend as described in the{' '}
-            <span className="font-mono">schema.sql</span> comments. Queries filter by{' '}
-            <span className="font-mono">wallet_address</span>.
+            RLS and publishable key usage are documented in <span className="font-mono">supabase/schema.sql</span>.
           </p>
 
-          <h3 className="font-semibold pt-3">Environment variables</h3>
+          <h3 className="font-semibold pt-3">Environment</h3>
           <ul className="list-disc list-inside ml-4 space-y-1">
-            <li>
-              <span className="font-mono">NEXT_PUBLIC_SUPABASE_URL</span> – project URL from Supabase.
-            </li>
-            <li>
-              <span className="font-mono">NEXT_PUBLIC_SUPABASE_PUB_KEY</span> – Publishable key{' '}
-              (<span className="font-mono">sb_publishable_...</span>) used in the browser.
-            </li>
-          </ul>
-
-          <h3 className="font-semibold pt-3">Frontend behavior</h3>
-          <ul className="list-disc list-inside ml-4 space-y-1">
-            <li>
-              On wallet connect, the dashboard fetches{' '}
-              <span className="font-mono">/transaction_history</span> rows by{' '}
-              <span className="font-mono">wallet_address</span> and shows them in the{' '}
-              <span className="font-mono">Transaction history</span> block.
-            </li>
-            <li>
-              Each row shows:
-              <ul className="list-disc list-inside ml-4 space-y-1">
-                <li>Date, type, asset, amount.</li>
-                <li>
-                  A primary link <span className="font-mono">View on Explorer</span> for{' '}
-                  <span className="font-mono">explorer_url</span>.
-                </li>
-                <li>
-                  When present, a secondary link{' '}
-                  <span className="font-mono">Vault transfer</span> using{' '}
-                  <span className="font-mono">vault_explorer_url</span>.
-                </li>
-              </ul>
-            </li>
+            <li><span className="font-mono">NEXT_PUBLIC_SUPABASE_URL</span></li>
+            <li><span className="font-mono">NEXT_PUBLIC_SUPABASE_PUB_KEY</span> (publishable)</li>
           </ul>
         </div>
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xl font-semibold text-primary-content">7. Vault backend</h2>
+        <h2 className="text-xl font-semibold text-primary-content">8. Vault backend</h2>
         <div className="rounded-xl bg-base-200 border border-base-300 p-5 space-y-3 text-sm leading-relaxed text-base-content">
           <p>
-            The vault backend (in <span className="font-mono">backend/</span>) is a small Express
-            server that:
+            The Node server in <span className="font-mono">backend/</span> (Express) holds the vault wallet and
+            sends user payouts from on-chain token/credit programs after the pool records the borrow/withdraw
+            intent.
           </p>
           <ul className="list-disc list-inside ml-4 space-y-1">
-            <li>Exposes POST endpoints for vault withdraw and borrow for ALEO and USDC.</li>
-            <li>Creates transactions using a vault private key and the Provable SDK.</li>
-            <li>Awaits the transfer and returns a <span className="font-mono">transactionId</span>{' '}
-                to the frontend.</li>
+            <li>
+              <span className="font-semibold">Vault transfers</span> for ALEO (<span className="font-mono">credits.aleo</span>
+              ), USDCx (<span className="font-mono">test_usdcx_stablecoin.aleo</span>), and USAD (
+              <span className="font-mono">test_usad_stablecoin.aleo</span>) via Provable SDK (
+              <span className="font-mono">processWithdrawal.js</span>).
+            </li>
+            <li>
+              <span className="font-semibold">GET /vault-balances</span> — public vault balances per token program
+              (used by the Markets UI and liquidity checks).
+            </li>
+            <li>
+              <span className="font-semibold">Vault watcher</span> — polls Supabase for rows needing a vault tx
+              and completes them.
+            </li>
+            <li>
+              <span className="font-semibold">Optional oracle</span> — backend can poll spot prices and broadcast{' '}
+              <span className="font-mono">set_asset_price</span> when configured (admin key + env); see{' '}
+              <span className="font-mono">backend/src/aleoPricePoller.js</span> and{' '}
+              <span className="font-mono">setAssetPriceOnChain.js</span>.
+            </li>
           </ul>
-          <p>
-            The dashboard uses that <span className="font-mono">transactionId</span> as{' '}
-            <span className="font-mono">vault_tx_id</span> and stores its explorer URL in{' '}
-            <span className="font-mono">vault_explorer_url</span> so users can inspect the vault
-            payouts directly from the Transaction history and the action modal.
+          <p className="text-xs text-base-content/70">
+            Configure <span className="font-mono">NEXT_PUBLIC_BACKEND_URL</span> on the frontend and{' '}
+            <span className="font-mono">CORS_ORIGIN</span> / vault env vars in <span className="font-mono">backend/.env</span>.
           </p>
         </div>
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xl font-semibold text-primary-content">8. Development &amp; environment</h2>
+        <h2 className="text-xl font-semibold text-primary-content">9. Development &amp; environment</h2>
         <div className="rounded-xl bg-base-200 border border-base-300 p-5 space-y-3 text-sm leading-relaxed text-base-content">
           <ul className="list-disc list-inside space-y-1">
             <li>
-              The app uses <span className="font-mono">NEXT_PUBLIC_APP_ENV</span> to distinguish
-              between dev and prod behavior for some UX pieces (e.g. how long certain status
-              messages stay visible).
+              <span className="font-semibold">Pool program:</span>{' '}
+              <span className="font-mono">NEXT_PUBLIC_LENDING_POOL_PROGRAM_ID=xyra_lending_v6.aleo</span> for the
+              unified deployment described here.
             </li>
             <li>
-              Frontend is a Next.js app (Pages router) with Tailwind + DaisyUI styling and a custom
-              layout in <span className="font-mono">layouts/_layout.tsx</span>.
+              <span className="font-semibold">Optional split USDC/USAD program IDs</span> — only if you deploy
+              separate programs; otherwise leave unset so the app and wallet list stay single-ID.
             </li>
             <li>
-              Wallet integration, pool RPC helpers, Supabase client code, and the vault backend
-              are all wired specifically for Aleo testnet and may need configuration changes for
-              mainnet.
+              <span className="font-mono">NEXT_PUBLIC_APP_ENV</span> toggles minor UX (e.g. status message timing).
+            </li>
+            <li>
+              Next.js Pages router, Tailwind + DaisyUI, layout in <span className="font-mono">layouts/_layout.tsx</span>.
+            </li>
+            <li>
+              All integrations target Aleo testnet unless you change RPC/network constants.
             </li>
           </ul>
 
-          <p className="text-xs text-base-content/60">
-            For more implementation details, see the source files referenced above (e.g.{` `}
+          <p className="text-xs text-base-content/60 pt-2">
+            Implementation entry points:{' '}
             <span className="font-mono">src/pages/dashboard.tsx</span>,{' '}
-            <span className="font-mono">supabase/schema.sql</span>, and{' '}
-            <span className="font-mono">backend/src/server.js</span>.
+            <span className="font-mono">src/components/aleo/rpc.ts</span>,{' '}
+            <span className="font-mono">backend/src/server.js</span>,{' '}
+            <span className="font-mono">supabase/schema.sql</span>.
           </p>
         </div>
       </section>
@@ -359,4 +373,3 @@ DocsPage.getLayout = function getLayout(page) {
 };
 
 export default DocsPage;
-

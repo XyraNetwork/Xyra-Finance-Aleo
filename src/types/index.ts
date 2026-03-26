@@ -50,11 +50,6 @@ export const USDC_POOL_PROGRAM_ID =
 // USDCx token program (Provable testnet): required for Token records used in USDC pool deposit/repay/withdraw/borrow.
 export const USDC_TOKEN_PROGRAM_ID = 'test_usdcx_stablecoin.aleo';
 
-// Optional: test_transfer_usdcx_v3/v4 demo (deposit_private / deposit). Must be listed on AleoWalletProvider
-// together with merkle_tree + multisig + freezelist or the wallet can mis-parse MerkleProof inputs.
-export const USDC_TRANSFER_PROGRAM_ID =
-  (process.env.NEXT_PUBLIC_USDC_TRANSFER_PROGRAM_ID || 'lending_pool_usdcx_v18.aleo').trim();
-
 /** Stablecoin stack imports — register with wallet so transitions resolve correctly. */
 export const USDCX_STACK_PROGRAM_IDS = [
   'merkle_tree.aleo',
@@ -73,3 +68,22 @@ export const USAD_TOKEN_PROGRAM_ID = 'test_usad_stablecoin.aleo';
 
 // Admin wallet allowed to initialize/admin-manage the pool from frontend.
 export const ADMIN_ADDRESS = (process.env.NEXT_PUBLIC_ADMIN_ADDRESS || '').trim();
+
+/**
+ * Program IDs passed to `AleoWalletProvider` `programs` (wallet connect permissions).
+ * Deduped: when USDC/USAD pools default to `BOUNTY_PROGRAM_ID`, the same ID was listed 3×.
+ * `lending_pool_usdce_v86.aleo` only appears if you set `NEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID` — not hardcoded in app code.
+ * Legacy `lending_pool_usdcx_v18.aleo` is not registered (unified pool / no separate transfer demo).
+ */
+export function getWalletConnectProgramIds(): string[] {
+  const raw: string[] = [
+    BOUNTY_PROGRAM_ID,
+    USDC_POOL_PROGRAM_ID,
+    ...USDCX_STACK_PROGRAM_IDS,
+    USAD_POOL_PROGRAM_ID,
+    USAD_TOKEN_PROGRAM_ID,
+    'credits.aleo',
+  ];
+  const cleaned = raw.map((id) => String(id).trim()).filter(Boolean);
+  return [...new Set(cleaned)];
+}

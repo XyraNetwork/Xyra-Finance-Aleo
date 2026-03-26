@@ -14,6 +14,9 @@ import {
   USAD_LENDING_POOL_PROGRAM_ID,
 } from '@/components/aleo/rpc';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
+import { SectionHeader } from '@/components/ui/SectionHeader';
+import { StatusChip } from '@/components/ui/StatusChip';
+import { AssetBadge } from '@/components/ui/AssetBadge';
 
 const SCALE = 1_000_000;
 
@@ -151,17 +154,14 @@ export function MarketsView() {
   return (
     <div className="flex justify-center pt-16 sm:pt-20">
       <div className="w-full max-w-6xl space-y-6 px-4">
-        <div className="rounded-xl bg-base-200 p-5 border border-base-300">
-          <div className="flex flex-wrap items-center gap-3 mb-1">
-            <h1 className="text-xl font-bold">Markets</h1>
-            <span className="badge badge-sm badge-outline">Aleo Testnet</span>
-          </div>
-          <p className="text-sm text-base-content/70">
-            Lending markets with the largest selection of assets. Public data.
-          </p>
-        </div>
+        <SectionHeader
+          title="Markets"
+          subtitle="Unified pool telemetry for ALEO, USDCx, and USAD. Public data."
+          badge="Aleo Testnet"
+          rightSlot={<StatusChip label="Live on-chain metrics" variant="info" />}
+        />
 
-        <div className="rounded-xl bg-base-200 border border-base-300 overflow-hidden">
+        <div className="privacy-card rounded-xl bg-base-200 border border-base-300 overflow-hidden">
           <div className="p-4 border-b border-base-300">
             <h2 className="text-lg font-semibold">
               Reserve overview
@@ -218,9 +218,7 @@ export function MarketsView() {
                 </thead>
                 <tbody>
                   <tr className="border-base-300">
-                    <td>
-                      <span className="font-medium">ALEO</span>
-                    </td>
+                    <td><AssetBadge asset="ALEO" compact /></td>
                     <td>{aleoTotalSupplied.toFixed(4)}</td>
                     <td>{aleoTotalBorrowed.toFixed(4)}</td>
                     <td>{aleoAvailable.toFixed(4)}</td>
@@ -229,9 +227,7 @@ export function MarketsView() {
                     <td className="text-warning">{aleoBorrowAPY.toFixed(2)}%</td>
                   </tr>
                   <tr className="border-base-300">
-                    <td>
-                      <span className="font-medium">USDCx</span>
-                    </td>
+                    <td><AssetBadge asset="USDCx" compact /></td>
                     <td>{usdcTotalSupplied.toFixed(4)}</td>
                     <td>{usdcTotalBorrowed.toFixed(4)}</td>
                     <td>{usdcAvailable.toFixed(4)}</td>
@@ -240,9 +236,7 @@ export function MarketsView() {
                     <td className="text-warning">{usdcBorrowAPY.toFixed(2)}%</td>
                   </tr>
                   <tr className="border-base-300">
-                    <td>
-                      <span className="font-medium">USAD</span>
-                    </td>
+                    <td><AssetBadge asset="USAD" compact /></td>
                     <td>{usadTotalSupplied.toFixed(4)}</td>
                     <td>{usadTotalBorrowed.toFixed(4)}</td>
                     <td>{Math.max(0, usadTotalSupplied - usadTotalBorrowed).toFixed(4)}</td>

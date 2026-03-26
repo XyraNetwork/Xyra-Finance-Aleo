@@ -1137,7 +1137,7 @@ export async function lendingWithdraw(
   }
 }
 
-// --- USDC Pool (lending_pool_usdce_v86.aleo) ---
+// --- USDC Pool (`NEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID`, or same as main lending pool when unset) ---
 // Contract: deposit(token, amount, proofs), repay(token, amount, proofs),
 //           withdraw(public amount), borrow(public amount).
 // - deposit/repay: 3 inputs — token, amount (micro-USDC), proofs. Block height is read on-chain.
@@ -2823,7 +2823,7 @@ export async function lendingAccrueInterest(
 }
 
 /**
- * Accrue interest on the USDC pool (lending_pool_usdce_v86.aleo). Same signature as Aleo pool.
+ * Accrue interest on the USDC pool (`USDC_LENDING_POOL_PROGRAM_ID`). Same signature as Aleo pool.
  */
 export async function lendingAccrueInterestUsdc(
   executeTransaction: ((tx: any) => Promise<any>) | undefined,
@@ -3027,7 +3027,7 @@ export async function getLendingPoolState(): Promise<{
 }
 
 /**
- * Read global pool state for the USDC pool (lending_pool_usdce_v86.aleo).
+ * Read global pool state for the USDC pool (`USDC_LENDING_POOL_PROGRAM_ID`).
  */
 export async function getUsdcLendingPoolState(): Promise<{
   totalSupplied: string | null;

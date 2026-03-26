@@ -10,6 +10,9 @@ import Button from '@/components/ui/button';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { PrivateDataColumnHeader } from '@/components/ui/PrivateDataColumnHeader';
 import { PrivateActionButton } from '@/components/ui/PrivateActionButton';
+import { AssetBadge } from '@/components/ui/AssetBadge';
+import { StatCard } from '@/components/ui/StatCard';
+import { StatusChip } from '@/components/ui/StatusChip';
 import { useWallet } from '@provablehq/aleo-wallet-adaptor-react';
 import { WalletMultiButton } from '@provablehq/aleo-wallet-adaptor-react-ui';
 import { Network } from '@provablehq/aleo-types';
@@ -177,7 +180,7 @@ const DashboardPage: NextPageWithLayout = () => {
   const [amountError, setAmountError] = useState<string | null>(null);
   const [privateAleoBalance, setPrivateAleoBalance] = useState<number | null>(null);
 
-  // USDC Pool state (lending_pool_usdce_v86.aleo — v86 interest/APY, effective balances)
+  // USDC Pool state (program from NEXT_PUBLIC_USDC_LENDING_POOL_PROGRAM_ID or main pool)
   const [totalSuppliedUsdc, setTotalSuppliedUsdc] = useState<string | null>(null);
   const [totalBorrowedUsdc, setTotalBorrowedUsdc] = useState<string | null>(null);
   const [utilizationIndexUsdc, setUtilizationIndexUsdc] = useState<string | null>(null);
@@ -2899,7 +2902,7 @@ const DashboardPage: NextPageWithLayout = () => {
                     <div className="flex items-center justify-between mt-1 text-sm text-base-content/70">
                       <span>
                       {actionModalMode === 'withdraw'
-                        ? 'Withdrawable (est.) '
+                        ? 'Withdrawable '
                         : actionModalMode === 'deposit'
                           ? 'Wallet balance '
                           : actionModalMode === 'borrow'
@@ -3181,31 +3184,43 @@ const DashboardPage: NextPageWithLayout = () => {
               </button>
             </div>
 
-            <div className="rounded-xl bg-base-200 border border-base-300 p-4">
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
-                <div>
-                  <div className="text-base-content/60">Total collateral (USD)</div>
-                  <div className="font-semibold">${totalCollateralUsd.toFixed(2)}</div>
-                </div>
-                <div>
-                  <div className="text-base-content/60">Borrowable (est.)</div>
-                  <div className="font-semibold">${borrowableUsd.toFixed(2)}</div>
-                </div>
-                <div>
-                  <div className="text-base-content/60">Total debt</div>
-                  <div className="font-semibold">${totalDebtUsd.toFixed(2)}</div>
-                </div>
-                <div>
-                  <div className="text-base-content/60">Health factor</div>
-                  <div className={`font-semibold ${healthFactor != null && healthFactor < 1 ? 'text-error' : 'text-success'}`}>
-                    {healthFactor == null ? 'Infinity' : healthFactor.toFixed(2)}
-                  </div>
-                </div>
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusChip label="Privacy command center" variant="info" />
+                <StatusChip
+                  label={healthFactor != null && healthFactor < 1 ? 'At risk' : 'Healthy'}
+                  variant={healthFactor != null && healthFactor < 1 ? 'danger' : 'good'}
+                />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <StatCard
+                  label="Total collateral (USD)"
+                  value={`$${totalCollateralUsd.toFixed(2)}`}
+                  hint="All supplied assets valued on-chain."
+                />
+                <StatCard
+                  label="Borrowable (USD)"
+                  value={`$${borrowableUsd.toFixed(2)}`}
+                  tone="warn"
+                  hint="Cross-asset cap before health drops below threshold."
+                />
+                <StatCard
+                  label="Total debt (USD)"
+                  value={`$${totalDebtUsd.toFixed(2)}`}
+                  tone="warn"
+                  hint="Borrowed value across ALEO, USDCx, and USAD."
+                />
+                <StatCard
+                  label="Health factor"
+                  value={healthFactor == null ? 'Infinity' : healthFactor.toFixed(2)}
+                  tone={healthFactor != null && healthFactor < 1 ? 'danger' : 'good'}
+                  hint={healthFactor != null && healthFactor < 1 ? 'Repay or add collateral.' : 'Safe borrow position.'}
+                />
               </div>
             </div>
 
             <div className="grid gap-6 md:grid-cols-2">
-              {/* Assets to supply — same design as Your supplies */}
+              {/* Assets to supply — same design as Your Supplies */}
               <div className="rounded-xl bg-base-200 p-5 space-y-4 border border-base-300">
                 <h2 className="text-lg font-semibold text-base-content">Assets to supply</h2>
                 <div className="overflow-x-auto">
@@ -3227,7 +3242,7 @@ const DashboardPage: NextPageWithLayout = () => {
                     </thead>
                     <tbody>
                       <tr>
-                        <td><span className="font-medium">ALEO</span></td>
+                        <td><AssetBadge asset="ALEO" compact /></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3259,7 +3274,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USDCx</span></td>
+                        <td><AssetBadge asset="USDCx" compact /></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3291,7 +3306,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USAD</span></td>
+                        <td><AssetBadge asset="USAD" compact /></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3327,9 +3342,9 @@ const DashboardPage: NextPageWithLayout = () => {
                 </div>
               </div>
 
-              {/* Assets to borrow — same design as Your borrows */}
+              {/* Assets to Borrow — same design as Your borrows */}
               <div className="rounded-xl bg-base-200 p-5 space-y-4 border border-base-300">
-                <h2 className="text-lg font-semibold text-base-content">Assets to borrow</h2>
+                <h2 className="text-lg font-semibold text-base-content">Assets to Borrow</h2>
                 <div className="overflow-x-auto">
                   <table className="table table-sm">
                     <thead>
@@ -3337,7 +3352,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         <th className="text-base-content/70 font-medium">Asset</th>
                         <th className="text-base-content/70 font-medium">
                           <span className="inline-flex items-center">
-                            <PrivateDataColumnHeader label="Available (est.)" />
+                            <PrivateDataColumnHeader label="Available" />
                             <InfoTooltip tip="Per-asset available borrow comes from on-chain cross-collateral headroom (USD) converted to this asset; vault-backed payouts are not limited by pool liquidity in the contract." />
                           </span>
                         </th>
@@ -3354,7 +3369,7 @@ const DashboardPage: NextPageWithLayout = () => {
                     </thead>
                     <tbody>
                       <tr>
-                        <td><span className="font-medium">ALEO</span></td>
+                        <td><AssetBadge asset="ALEO" compact /></td>
                         <td className="text-base-content/90">
                           {isRefreshingState ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3379,7 +3394,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USDCx</span></td>
+                        <td><AssetBadge asset="USDCx" compact /></td>
                         <td className="text-base-content/90">
                           {isRefreshingUsdcState ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3404,7 +3419,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USAD</span></td>
+                        <td><AssetBadge asset="USAD" compact /></td>
                         <td className="text-base-content/90">
                           {isRefreshingUsadState ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3432,9 +3447,9 @@ const DashboardPage: NextPageWithLayout = () => {
                   </table>
                 </div>
               </div>
-              {/* Your supplies */}
+              {/* Your Supplies */}
               <div className="rounded-xl bg-base-200 p-5 space-y-4 border border-base-300">
-                <h2 className="text-lg font-semibold text-base-content">Your supplies</h2>
+                <h2 className="text-lg font-semibold text-base-content">Your Supplies</h2>
                 <div className="overflow-x-auto">
                   <table className="table table-sm">
                     <thead>
@@ -3442,7 +3457,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         <th className="text-base-content/70 font-medium">Asset</th>
                         <th className="text-base-content/70 font-medium">
                           <span className="inline-flex items-center">
-                            <PrivateDataColumnHeader label="Available (est.)" />
+                            <PrivateDataColumnHeader label="Available" />
                             <InfoTooltip tip="Withdraw is cross-asset: you can withdraw any output asset against total portfolio collateral. This shows the on-chain withdraw cap expressed in this output asset (with ~$ value)." />
                           </span>
                         </th>
@@ -3452,7 +3467,7 @@ const DashboardPage: NextPageWithLayout = () => {
                     </thead>
                     <tbody>
                       <tr>
-                        <td><span className="font-medium">ALEO</span></td>
+                        <td><AssetBadge asset="ALEO" compact /></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3484,7 +3499,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USDCx</span></td>
+                        <td><AssetBadge asset="USDCx" compact /></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3516,7 +3531,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USAD</span></td>
+                        <td><AssetBadge asset="USAD" compact /></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3551,10 +3566,10 @@ const DashboardPage: NextPageWithLayout = () => {
                 </div>
               </div>
 
-              {/* Assets to repay (cross-asset) */}
+              {/* Assets to Repay (cross-asset) */}
               <div className="rounded-xl bg-base-200 p-5 space-y-4 border border-base-300">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="text-lg font-semibold text-base-content">Assets to repay</h2>
+                  <h2 className="text-lg font-semibold text-base-content">Assets to Repay</h2>
                   <div className="text-sm text-base-content/70">
                     Portfolio debt:{' '}
                     <span className="font-mono font-medium">
@@ -3574,7 +3589,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         <th className="text-base-content/70 font-medium">Asset</th>
                         <th className="text-base-content/70 font-medium">
                           <span className="inline-flex items-center">
-                            <PrivateDataColumnHeader label="Available (est.)" />
+                            <PrivateDataColumnHeader label="Available" />
                             <InfoTooltip tip="Repay is cross-asset: you can repay your total portfolio debt using any asset. This shows your total portfolio debt expressed in this repay asset (same ~$ value across rows)." />
                           </span>
                         </th>
@@ -3584,7 +3599,7 @@ const DashboardPage: NextPageWithLayout = () => {
                     </thead>
                     <tbody>
                       <tr>
-                        <td><span className="font-medium">ALEO</span></td>
+                        <td><AssetBadge asset="ALEO" compact /></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3625,7 +3640,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USDCx</span></td>
+                        <td><AssetBadge asset="USDCx" compact /></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3666,7 +3681,7 @@ const DashboardPage: NextPageWithLayout = () => {
                         </td>
                       </tr>
                       <tr>
-                        <td><span className="font-medium">USAD</span></td>
+                        <td><AssetBadge asset="USAD" compact /></td>
                         <td className="text-base-content/90">
                           {walletBalancesLoading ? (
                             <span className="loading loading-spinner loading-xs text-base-content/60" />
@@ -3762,13 +3777,15 @@ const DashboardPage: NextPageWithLayout = () => {
                           </td>
                           <td className="capitalize">{row.type}</td>
                           <td>
-                            {row.asset === 'usdcx'
-                              ? 'USDCx'
-                              : row.asset === 'usad' || row.asset === 'usadx'
-                                ? 'USAD'
-                                : row.asset === 'aleo'
-                                  ? 'ALEO'
-                                  : String(row.asset).toUpperCase()}
+                            {row.asset === 'usdcx' ? (
+                              <AssetBadge asset="USDCx" compact />
+                            ) : row.asset === 'usad' || row.asset === 'usadx' ? (
+                              <AssetBadge asset="USAD" compact />
+                            ) : row.asset === 'aleo' ? (
+                              <AssetBadge asset="ALEO" compact />
+                            ) : (
+                              String(row.asset).toUpperCase()
+                            )}
                           </td>
                           <td>
                             {Number(row.amount).toLocaleString(undefined, {
