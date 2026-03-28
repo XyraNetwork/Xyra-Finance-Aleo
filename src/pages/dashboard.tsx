@@ -131,6 +131,18 @@ function amountForMaxButton(rawMax: number): number {
   return Math.max(0, rawMax - MAX_BUTTON_BUFFER);
 }
 
+/** Cross-asset repay: value of `amountAsset` in USD must not exceed total portfolio debt (same rounding as amountWithinMax). */
+function repayAmountAssetWithinTotalDebtUsd(
+  amountAsset: number,
+  priceUsd: number,
+  totalDebtUsd: number,
+): boolean {
+  if (!Number.isFinite(amountAsset) || !Number.isFinite(priceUsd) || !Number.isFinite(totalDebtUsd)) return false;
+  if (amountAsset <= 0 || priceUsd <= 0 || totalDebtUsd <= 0) return false;
+  const payUsd = amountAsset * priceUsd;
+  return amountWithinMax(payUsd, totalDebtUsd);
+}
+
 /** Transaction history: program tx + optional vault tx pills in one row */
 function TxHistoryTrxPills({
   txId,
@@ -329,6 +341,14 @@ const DashboardPage: NextPageWithLayout = () => {
 
   /** Matches `finalize_withdraw` integer math; when set, withdraw caps use this instead of float portfolio. */
   const [chainWithdrawCaps, setChainWithdrawCaps] = useState<CrossCollateralWithdrawCaps | null>(null);
+
+  /** Latest cross-asset totals for handlers defined above portfolio math (repay/borrow caps). */
+  const crossAssetPortfolioRef = useRef({
+    totalDebtUsd: 0,
+    aleoPriceUsd: 1,
+    usdcPriceUsd: 1,
+    usadPriceUsd: 1,
+  });
 
   // Action modal (Aave-style: withdraw/deposit/borrow/repay with overview + tx status)
   const [actionModalOpen, setActionModalOpen] = useState(false);
@@ -1317,6 +1337,30 @@ const DashboardPage: NextPageWithLayout = () => {
         throw new Error('Amount must be greater than zero.');
       }
 
+      // Cross-asset repay: any asset can pay down total USD debt; cap payment at portfolio total.
+      if (action === 'repay') {
+        if (portfolioDebtUsdForRepay <= 1e-9) {
+          const msg = 'No outstanding debt to repay.';
+          setAmountError(msg);
+          setStatusMessage(msg);
+          setLoading(false);
+          return;
+        }
+        if (
+          !repayAmountAssetWithinTotalDebtUsd(amountToUse, ALEO_PRICE_USD, portfolioDebtUsdForRepay)
+        ) {
+          const cap =
+            ALEO_PRICE_USD > 0 ? portfolioDebtUsdForRepay / ALEO_PRICE_USD : 0;
+          const msg = `Repay exceeds total portfolio debt (~$${portfolioDebtUsdForRepay.toFixed(
+            2,
+          )}). At current prices, pay at most ~${cap.toFixed(4)} ALEO (you can clear all debt using any asset).`;
+          setAmountError(msg);
+          setStatusMessage(msg);
+          setLoading(false);
+          return;
+        }
+      }
+
       // Vault liquidity check (borrow/withdraw payouts come from backend vault).
       // Keep existing portfolio/on-chain checks; this is an additional safety gate.
       if (action === 'borrow' || action === 'withdraw') {
@@ -1758,6 +1802,29 @@ const DashboardPage: NextPageWithLayout = () => {
         throw new Error('Amount must be greater than zero.');
       }
 
+      if (action === 'repay') {
+        if (portfolioDebtUsdForRepay <= 1e-9) {
+          const msg = 'No outstanding debt to repay.';
+          setAmountErrorUsdc(msg);
+          setStatusMessage(msg);
+          setLoading(false);
+          return;
+        }
+        if (
+          !repayAmountAssetWithinTotalDebtUsd(amountToUse, USDCX_PRICE_USD, portfolioDebtUsdForRepay)
+        ) {
+          const cap =
+            USDCX_PRICE_USD > 0 ? portfolioDebtUsdForRepay / USDCX_PRICE_USD : 0;
+          const msg = `Repay exceeds total portfolio debt (~$${portfolioDebtUsdForRepay.toFixed(
+            2,
+          )}). At current prices, pay at most ~${cap.toFixed(4)} USDCx (any asset can pay down total debt).`;
+          setAmountErrorUsdc(msg);
+          setStatusMessage(msg);
+          setLoading(false);
+          return;
+        }
+      }
+
       // Vault liquidity check (USDCx withdrawals/borrows are paid by backend vault).
       if (action === 'borrow' || action === 'withdraw') {
         const vault = await fetchVaultBalancesHuman();
@@ -1778,7 +1845,6 @@ const DashboardPage: NextPageWithLayout = () => {
       const poolBorrowedMicro = Number(totalBorrowedUsdc) || 0;
       const netSuppliedHuman = netSuppliedMicro / USDC_SCALE;
       const netBorrowedHuman = netBorrowedMicro / USDC_SCALE;
-      const maxRepayHuman = netBorrowedHuman;
       const availableLiquidityHuman = Math.max(0, (poolSuppliedMicro - poolBorrowedMicro) / USDC_SCALE);
       const poolStateLoadedUsdc = poolSuppliedMicro > 0 || poolBorrowedMicro > 0;
       // Withdraw: w <= min(supply, liquidity, C - D/LTV)
@@ -2008,6 +2074,29 @@ const DashboardPage: NextPageWithLayout = () => {
       const amountToUse = typeof amountOverride === 'number' ? amountOverride : amountUsad;
       if (amountToUse <= 0) {
         throw new Error('Amount must be greater than zero.');
+      }
+
+      if (action === 'repay') {
+        if (portfolioDebtUsdForRepay <= 1e-9) {
+          const msg = 'No outstanding debt to repay.';
+          setAmountErrorUsad(msg);
+          setStatusMessage(msg);
+          setLoading(false);
+          return;
+        }
+        if (
+          !repayAmountAssetWithinTotalDebtUsd(amountToUse, USAD_PRICE_USD, portfolioDebtUsdForRepay)
+        ) {
+          const cap =
+            USAD_PRICE_USD > 0 ? portfolioDebtUsdForRepay / USAD_PRICE_USD : 0;
+          const msg = `Repay exceeds total portfolio debt (~$${portfolioDebtUsdForRepay.toFixed(
+            2,
+          )}). At current prices, pay at most ~${cap.toFixed(4)} USAD (any asset can pay down total debt).`;
+          setAmountErrorUsad(msg);
+          setStatusMessage(msg);
+          setLoading(false);
+          return;
+        }
       }
 
       // Vault liquidity check (USAD withdrawals/borrows are paid by backend vault).
@@ -2799,7 +2888,7 @@ const DashboardPage: NextPageWithLayout = () => {
         : actionModalMode === 'borrow'
           ? `Borrow ${actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'
           }`
-          : `Repay ${actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'
+          : `Repay with ${actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'
           }`;
 
   const supplyBalanceModal =
@@ -2812,12 +2901,13 @@ const DashboardPage: NextPageWithLayout = () => {
       : actionModalAsset === 'usdc'
         ? (privateUsdcBalance ?? 0)
         : (privateUsadBalance ?? 0);
+  // Borrow: same USD headroom as `finalize_borrow`, expressed in the selected asset (use chain caps when present).
   const modalBorrowPortfolioMax =
     actionModalAsset === 'aleo'
-      ? maxBorrowAleoByPortfolio
+      ? availableBorrowAleo
       : actionModalAsset === 'usdc'
-        ? maxBorrowUsdcByPortfolio
-        : maxBorrowUsadByPortfolio;
+        ? availableBorrowUsdc
+        : availableBorrowUsad;
 
   // Repay is cross-asset. In the repay modal we show portfolio debt expressed in the
   // currently selected repay asset, and clamp MAX by the user's private balance.
@@ -3068,25 +3158,22 @@ const DashboardPage: NextPageWithLayout = () => {
               : 0;
       case 'Borrow':
         return assetKey === 'aleo'
-          ? ALEO_PRICE_USD > 0
-            ? borrowableUsd / ALEO_PRICE_USD
-            : 0
+          ? availableBorrowAleo
           : assetKey === 'usdc'
-            ? USDCX_PRICE_USD > 0
-              ? borrowableUsd / USDCX_PRICE_USD
-              : 0
-            : USAD_PRICE_USD > 0
-              ? borrowableUsd / USAD_PRICE_USD
-              : 0;
+            ? availableBorrowUsdc
+            : availableBorrowUsad;
       case 'Repay': {
-        const priv =
-          assetKey === 'aleo'
-            ? (privateAleoBalance ?? 0)
-            : assetKey === 'usdc'
-              ? (privateUsdcBalance ?? 0)
-              : (privateUsadBalance ?? 0);
         const suggested =
           assetKey === 'aleo' ? repaySuggestedAleoHuman : assetKey === 'usdc' ? repaySuggestedUsdcHuman : repaySuggestedUsadHuman;
+        const priv =
+          assetKey === 'aleo'
+            ? privateAleoBalance
+            : assetKey === 'usdc'
+              ? privateUsdcBalance
+              : privateUsadBalance;
+        // Cross-asset repay: max = min(wallet in this asset, total portfolio debt expressed in this asset).
+        // If wallet balance not loaded yet, use suggested so Repay is not stuck at 0.
+        if (priv == null) return suggested;
         return Math.min(priv, suggested);
       }
       default:
@@ -3143,7 +3230,7 @@ const DashboardPage: NextPageWithLayout = () => {
             setPrivateAleoBalance(bal);
           } catch { }
         }
-        return Math.min(bal ?? 0, suggested);
+        return bal == null ? suggested : Math.min(bal, suggested);
       }
 
       if (assetKey === 'usdc') {
@@ -3336,10 +3423,13 @@ const DashboardPage: NextPageWithLayout = () => {
                     </div>
                     <div className="flex items-center justify-between mt-2 text-sm text-slate-500">
                       <span>
-                        {actionModalMode === 'withdraw' ? `Withdrawable ${modalMaxAmount.toFixed(2)}`
-                          : actionModalMode === 'deposit' ? `Wallet balance ${privateBalanceModal.toFixed(2)}`
-                            : actionModalMode === 'borrow' ? `Portfolio borrow max ${modalBorrowPortfolioMax.toFixed(2)}`
-                              : `Debt ${repaySuggestedModalHuman.toFixed(2)}`}
+                        {actionModalMode === 'withdraw'
+                          ? `Available Withdrawable: ${modalMaxAmount.toFixed(2)} ${actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'}`
+                          : actionModalMode === 'deposit'
+                            ? `Wallet: ${privateBalanceModal.toFixed(2)}`
+                            : actionModalMode === 'borrow'
+                              ? `Max borrow: ${modalBorrowPortfolioMax.toFixed(4)} ${actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'}`
+                              : `Max repay: ${repaySuggestedModalHuman.toFixed(4)} ${actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'}`}
                       </span>
                       <button
                         type="button"
@@ -3362,18 +3452,30 @@ const DashboardPage: NextPageWithLayout = () => {
                   </div>
                   <div className="rounded-xl p-4 space-y-2" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
                     <div className="text-sm font-medium text-slate-300 mb-1">Transaction overview</div>
-                    <div className="flex justify-between text-sm text-slate-400">
-                      <span>{actionModalMode === 'withdraw' ? 'Remaining withdrawable' : actionModalMode === 'deposit' ? 'Supply after' : actionModalMode === 'borrow' ? 'Debt after' : 'Remaining debt'}</span>
-                      <span className="text-white font-mono">{remainingSupply.toFixed(2)} {actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'}</span>
-                    </div>
+                    {(actionModalMode === 'withdraw' || actionModalMode === 'deposit') && (
+                      <div className="flex justify-between text-sm text-slate-400">
+                        <span>{actionModalMode === 'withdraw' ? 'Remaining withdrawable' : 'Supply after'}</span>
+                        <span className="text-white font-mono">{remainingSupply.toFixed(2)} {actionModalAsset === 'aleo' ? 'ALEO' : actionModalAsset === 'usdc' ? 'USDCx' : 'USAD'}</span>
+                      </div>
+                    )}
+                    {(actionModalMode === 'borrow' || actionModalMode === 'repay') && (
+                      <div className="flex justify-between text-sm text-slate-400">
+                        <span>{actionModalMode === 'borrow' ? 'Total debt after (USD est.)' : 'Remaining total debt (USD est.)'}</span>
+                        <span className="text-white font-mono">
+                          ${(actionModalMode === 'borrow' ? postTotalDebtUsd : remainingDebtUsdAfterRepay).toFixed(2)}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-sm text-slate-400">
                       <span>Est. weighted collateral (USD)</span>
                       <span className="text-white font-mono">${postWeightedCollateralUsd.toFixed(2)}</span>
                     </div>
-                    <div className="flex justify-between text-sm text-slate-400">
-                      <span>Est. total debt (USD)</span>
-                      <span className="text-white font-mono">${postTotalDebtUsd.toFixed(2)}</span>
-                    </div>
+                    {(actionModalMode !== 'borrow' && actionModalMode !== 'repay') && (
+                      <div className="flex justify-between text-sm text-slate-400">
+                        <span>Est. total debt (USD)</span>
+                        <span className="text-white font-mono">${postTotalDebtUsd.toFixed(2)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-sm text-slate-400">
                       <span>Est. health factor</span>
                       <span className={`font-mono font-medium ${postHealthFactor != null && postHealthFactor < 1 ? 'text-red-400' : 'text-emerald-400'}`}>
@@ -3603,7 +3705,7 @@ const DashboardPage: NextPageWithLayout = () => {
               {[
                 { label: 'Total Collateral (USD)', value: `$${totalCollateralUsd.toFixed(2)}`, color: 'text-white' },
                 { label: 'Borrowable (USD)', value: `$${borrowableUsd.toFixed(2)}`, color: 'text-cyan-400' },
-                { label: 'Total Debt (USD)', value: `$${totalDebtUsd.toFixed(2)}`, color: 'text-indigo-400' },
+                { label: 'Total Debt (USD)', value: `$${totalDebtUsdForHf.toFixed(2)}`, color: 'text-indigo-400' },
                 { label: 'Health Factor', value: healthFactor == null ? '∞' : healthFactor.toFixed(2), color: healthFactor != null && healthFactor < 1 ? 'text-red-400' : 'text-emerald-400' },
               ].map(stat => (
                 <div key={stat.label} className="rounded-2xl p-6 relative overflow-hidden" style={dashGlass}>
@@ -3676,7 +3778,7 @@ const DashboardPage: NextPageWithLayout = () => {
                               </button>
                             ))}
                           </div>
-                          <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+                          <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
                             <span className="text-base font-semibold text-slate-200 tracking-tight">
                               Amount to {activeManageTab}
                             </span>
@@ -3687,49 +3789,71 @@ const DashboardPage: NextPageWithLayout = () => {
                                   : asset.id === 'usdc'
                                     ? USDCX_PRICE_USD
                                     : USAD_PRICE_USD;
-                              if (activeManageTab === 'Supply') {
-                                return (
-                                  <span className="text-sm sm:text-base text-slate-500 text-right max-w-[min(100%,22rem)]">
-                                    Wallet Balance:{' '}
-                                    <span className="font-mono tabular-nums text-slate-300">{asset.wallet.toFixed(2)}</span>
-                                    <span className="text-slate-500 ml-1">{asset.label}</span>
-                                  </span>
-                                );
-                              }
-                              if (activeManageTab === 'Withdraw') {
-                                const withdrawUsd =
-                                  asset.id === 'aleo'
-                                    ? availableWithdrawAleoUsd
-                                    : asset.id === 'usdc'
-                                      ? availableWithdrawUsdcUsd
-                                      : availableWithdrawUsadUsd;
-                                return (
-                                  <span className="text-sm sm:text-base text-slate-500 text-right max-w-[min(100%,22rem)]">
-                                    Available Withdrawable (USD):{' '}
-                                    <span className="font-mono tabular-nums text-slate-300">${withdrawUsd.toFixed(2)}</span>
-                                  </span>
-                                );
-                              }
-                              if (activeManageTab === 'Borrow') {
-                                const borrowUsd =
-                                  asset.id === 'aleo'
-                                    ? availableBorrowAleoUsd
-                                    : asset.id === 'usdc'
-                                      ? availableBorrowUsdcUsd
-                                      : availableBorrowUsadUsd;
-                                return (
-                                  <span className="text-sm sm:text-base text-slate-500 text-right max-w-[min(100%,22rem)]">
-                                    Available to Borrow (USD):{' '}
-                                    <span className="font-mono tabular-nums text-slate-300">${borrowUsd.toFixed(2)}</span>
-                                  </span>
-                                );
-                              }
-                              const repayUsd = Math.min(portfolioDebtUsdForRepay, asset.wallet * priceUsd);
+                              const walletUsd = asset.wallet * priceUsd;
+                              const maxPayThisAssetUsd = Math.min(
+                                portfolioDebtUsdForRepay,
+                                walletUsd,
+                              );
+                              const repayWalletTip =
+                                walletUsd < portfolioDebtUsdForRepay - 1e-6 && portfolioDebtUsdForRepay > 1e-6
+                                  ? `Your ${asset.label} balance only covers about $${maxPayThisAssetUsd.toFixed(2)} toward debt in one transaction. Use Max, switch to another asset row, or repay in multiple steps.`
+                                  : `Repay with any asset. Payments reduce debt in order: ALEO → USDCx → USAD. This row only uses your ${asset.label} wallet.`;
+
+                              const totalDebtTip =
+                                'Sum of borrowed principal across ALEO, USDCx, and USAD, valued in USD (on-chain totals when available).';
+                              const withdrawOnlyTip = `You receive ${asset.label}. The program may reduce supplied collateral across reserves to keep your health factor safe.`;
+                              const borrowOnlyTip = `How much more you can borrow in USD before hitting weighted collateral vs debt limits. You receive ${asset.label}; the program checks your full portfolio.`;
+                              const supplyWalletTip =
+                                'Private balance you can supply in one transaction. Some assets need one private record to cover the full amount.';
+
                               return (
-                                <span className="text-sm sm:text-base text-slate-500 text-right max-w-[min(100%,22rem)]">
-                                  Available to Repay (USD):{' '}
-                                  <span className="font-mono tabular-nums text-slate-300">${repayUsd.toFixed(2)}</span>
-                                </span>
+                                <div className="text-right text-sm font-mono space-y-2 max-w-[min(100%,22rem)]">
+                                  {activeManageTab === 'Supply' && (
+                                    <div className="flex items-center justify-end gap-0.5 text-slate-400">
+                                      <span>
+                                        Wallet ({asset.label}):{' '}
+                                        <span className="tabular-nums text-slate-200">{asset.wallet.toFixed(2)}</span>
+                                      </span>
+                                      <InfoTooltip variant="onDark" tip={supplyWalletTip} />
+                                    </div>
+                                  )}
+                                  {activeManageTab === 'Withdraw' && (
+                                    <div className="flex items-center justify-end gap-0.5 text-slate-400">
+                                      <span>
+                                        Available Withdrawable (USD):{' '}
+                                        <span className="tabular-nums text-slate-200">${portfolioWithdrawUsd.toFixed(2)}</span>
+                                      </span>
+                                      <InfoTooltip variant="onDark" tip={withdrawOnlyTip} />
+                                    </div>
+                                  )}
+                                  {activeManageTab === 'Borrow' && (
+                                    <div className="flex items-center justify-end gap-0.5 text-slate-400">
+                                      <span>
+                                        Available Borrowable (USD):{' '}
+                                        <span className="tabular-nums text-cyan-300">${borrowableUsd.toFixed(2)}</span>
+                                      </span>
+                                      <InfoTooltip variant="onDark" tip={borrowOnlyTip} />
+                                    </div>
+                                  )}
+                                  {activeManageTab === 'Repay' && (
+                                    <>
+                                      <div className="flex items-center justify-end gap-0.5 text-slate-400">
+                                        <span>
+                                          Total Debt (USD):{' '}
+                                          <span className="tabular-nums text-indigo-300">${totalDebtUsdForHf.toFixed(2)}</span>
+                                        </span>
+                                        <InfoTooltip variant="onDark" tip={totalDebtTip} />
+                                      </div>
+                                      <div className="flex items-center justify-end gap-0.5 text-slate-400">
+                                        <span>
+                                          Max repay with {asset.label} (USD):{' '}
+                                          <span className="tabular-nums text-slate-200">${maxPayThisAssetUsd.toFixed(2)}</span>
+                                        </span>
+                                        <InfoTooltip variant="onDark" tip={repayWalletTip} />
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
                               );
                             })()}
                           </div>
@@ -3788,7 +3912,12 @@ const DashboardPage: NextPageWithLayout = () => {
                             disabled={(() => {
                               const r = Number(manageAmountInput);
                               const m = getInlineMaxAmount(activeManageTab, asset.id);
-                              return loading || !Number.isFinite(r) || !amountWithinMax(r, m);
+                              return (
+                                loading ||
+                                !Number.isFinite(r) ||
+                                (activeManageTab === 'Repay' && !hasAnyDebt) ||
+                                !amountWithinMax(r, m)
+                              );
                             })()}
                             className="w-full font-bold py-5 rounded-3xl text-xl sm:text-[1.35rem] transition-all disabled:opacity-40 disabled:cursor-not-allowed min-h-[60px] shadow-lg shadow-cyan-950/20"
                             style={{ background: 'linear-gradient(to right, #22d3ee, #6366f1)', color: '#030712' }}
@@ -3803,18 +3932,29 @@ const DashboardPage: NextPageWithLayout = () => {
                             const isThisInline = inlineTxContext?.tab === activeManageTab && inlineTxContext?.asset === asset.id;
                             return (
                               <div className="space-y-7 text-sm">
-                                <div>
-                                  <p className="text-xs font-mono uppercase tracking-wider text-slate-500 mb-2">{preview.remainingAfterLabel}</p>
-                                  <p className="font-mono text-xl text-white tracking-tight">{preview.remainingAfter.toFixed(2)} {preview.assetSymbol}</p>
-                                </div>
+                                {activeManageTab === 'Borrow' || activeManageTab === 'Repay' ? (
+                                  <div>
+                                    <p className="text-xs font-mono uppercase tracking-wider text-slate-500 mb-2">
+                                      {activeManageTab === 'Borrow' ? 'Total debt after (USD est.)' : 'Remaining total debt (USD est.)'}
+                                    </p>
+                                    <p className="font-mono text-xl text-white tracking-tight">${preview.postTotalDebtUsd.toFixed(2)}</p>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <p className="text-xs font-mono uppercase tracking-wider text-slate-500 mb-2">{preview.remainingAfterLabel}</p>
+                                    <p className="font-mono text-xl text-white tracking-tight">{preview.remainingAfter.toFixed(2)} {preview.assetSymbol}</p>
+                                  </div>
+                                )}
                                 <div>
                                   <p className="text-xs font-mono uppercase tracking-wider text-slate-500 mb-2">Est. weighted collateral (USD)</p>
                                   <p className="font-mono text-xl text-white tracking-tight">${preview.postWeightedCollateralUsd.toFixed(2)}</p>
                                 </div>
-                                <div>
-                                  <p className="text-xs font-mono uppercase tracking-wider text-slate-500 mb-2">Est. total debt (USD)</p>
-                                  <p className="font-mono text-xl text-white tracking-tight">${preview.postTotalDebtUsd.toFixed(2)}</p>
-                                </div>
+                                {(activeManageTab !== 'Borrow' && activeManageTab !== 'Repay') && (
+                                  <div>
+                                    <p className="text-xs font-mono uppercase tracking-wider text-slate-500 mb-2">Est. total debt (USD)</p>
+                                    <p className="font-mono text-xl text-white tracking-tight">${preview.postTotalDebtUsd.toFixed(2)}</p>
+                                  </div>
+                                )}
                                 {isThisInline && loading && (
                                   <div className="flex items-center gap-2 text-sm text-slate-500 pt-2">
                                     <span className="loading loading-spinner loading-sm" />
@@ -3833,8 +3973,8 @@ const DashboardPage: NextPageWithLayout = () => {
                   )}
                 </div>
               ))}
-              <div className="px-8 py-4 flex items-center text-xs text-slate-600 font-mono" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                Showing 3 supported assets on Aleo
+              <div className="px-8 py-4 text-xs text-slate-600 font-mono" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                <span>Showing 3 supported assets on Aleo</span>
               </div>
             </div>
           </>

@@ -3,12 +3,19 @@
 type InfoTooltipProps = {
   tip: string;
   className?: string;
+  /** High-contrast bubble for dark navy panels (e.g. dashboard Manage). */
+  variant?: 'default' | 'onDark';
 };
 
-export function InfoTooltip({ tip, className = '' }: InfoTooltipProps) {
+export function InfoTooltip({ tip, className = '', variant = 'default' }: InfoTooltipProps) {
+  const variantClass =
+    variant === 'onDark'
+      ? 'tooltip-dashboard-on-dark'
+      : 'tooltip-info';
+
   return (
     <span
-      className={`tooltip tooltip-bottom tooltip-info inline-flex items-center justify-center ml-1 cursor-help ${className}`}
+      className={`tooltip tooltip-bottom ${variantClass} inline-flex items-center justify-center ml-1 cursor-help ${className}`}
       data-tip={tip}
     >
       <svg
@@ -17,7 +24,7 @@ export function InfoTooltip({ tip, className = '' }: InfoTooltipProps) {
         viewBox="0 0 24 24"
         strokeWidth={1.5}
         stroke="currentColor"
-        className="w-4 h-4 text-base-content/60 hover:text-base-content/80 transition-colors"
+        className={`w-4 h-4 transition-colors ${variant === 'onDark' ? 'text-slate-400 hover:text-cyan-400' : 'text-base-content/60 hover:text-base-content/80'}`}
         aria-hidden
       >
         <path

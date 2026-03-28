@@ -260,6 +260,36 @@ Styles for Swiper slider
   white-space: normal;
   text-align: left;
 }
+
+/*
+ * Dashboard Manage panel: high-contrast tooltips on dark navy (DaisyUI 5 uses [data-tip]::before + ::after tail).
+ * Force bg + text so theme `neutral-content` on `neutral` does not wash out.
+ */
+.tooltip.tooltip-dashboard-on-dark {
+  --tt-bg: #1e293b !important;
+  z-index: 99999;
+  position: relative;
+}
+.tooltip.tooltip-dashboard-on-dark[data-tip]::before {
+  color: #f8fafc !important;
+  background-color: #1e293b !important;
+  max-width: 20rem !important;
+  font-size: 0.75rem !important;
+  line-height: 1.35 !important;
+  font-weight: 500 !important;
+  white-space: normal !important;
+  text-align: left !important;
+  padding: 0.5rem 0.65rem !important;
+  border: 1px solid #38bdf8 !important;
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.8),
+    0 12px 40px rgba(0, 0, 0, 0.75) !important;
+  z-index: 99999 !important;
+}
+.tooltip.tooltip-dashboard-on-dark[data-tip]::after {
+  background-color: #1e293b !important;
+  z-index: 99999 !important;
+}
 /* Private data (shield) column header tooltip - visible and readable */
 .private-data-tooltip::before {
   font-size: 0.75rem;

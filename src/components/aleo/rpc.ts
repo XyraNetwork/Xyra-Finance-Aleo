@@ -2468,7 +2468,7 @@ export async function lendingRepayUsad(
           tokenInputPreview:
             typeof tokenInput === 'string' ? tokenInput.slice(0, 100) : typeof tokenInput,
           hints: [
-            'finalize_repay asserts amount <= on-chain accrued debt; UI can lag interest — try a smaller repay.',
+            'Cross-asset repay: finalize_repay_any applies payment USD to all debts in order (ALEO→USDCx→USAD); excess payment stays as pool liquidity. UI can lag interest — try a slightly smaller amount if rejected.',
             'Invalid Merkle proofs for test_usad_stablecoin transfer_private_to_public will reject.',
             'NEXT_PUBLIC_* pool program id must match the deployed pool you initialized.',
           ],
