@@ -273,7 +273,7 @@ const DocsPage: NextPageWithLayout = () => {
           </h2>
           <div className="p-8 rounded-2xl space-y-4" style={customStyles.glassPanel}>
             <ul className="list-disc list-inside space-y-3 text-sm text-slate-400">
-              <li><span className="font-semibold text-white">Architecture:</span> move toward a <strong>dual-pool, Aave-style</strong> layout with <strong>rigorous interest-rate models</strong>—that pattern is the strongest foundation for a serious money market.</li>
+              <li><span className="font-semibold text-white">Architecture:</span> <strong>multi-asset, cross-collateral, Aave-style</strong> money market—one program with separate reserves (ALEO, USDCx, USAD), per-reserve utilization and indices, and a linear base+slope borrow curve with reserve factor (see <span className="font-mono text-cyan-400">finalize_accrue</span>).</li>
               <li><span className="font-semibold text-white">Explore:</span> <strong>flash loan</strong> support (design and safety work TBD).</li>
               <li><span className="font-semibold text-white">Later:</span> liquidations, governance, richer oracles, and additional assets as the stack matures.</li>
           </ul>

@@ -32,7 +32,7 @@ Program IDs are configured via **`NEXT_PUBLIC_*`** env vars (see below), not har
 
 ### Leo programs (`program/`)
 
-- **Money-market core:** deposit, borrow, repay, withdraw, accrue interest, utilization-based borrow/supply dynamics—implemented in **`program/src/main.leo`** (ALEO-denominated pool, not a USD-native mint).
+- **Money-market core:** deposit, borrow, repay, withdraw, accrue interest, utilization-based borrow/supply dynamics—implemented in **`program/src/main.leo`** as **multiple reserves** (ALEO credits, USDCx, USAD) in one program with cross-collateral health checks.
 - **Public pool state:** totals, indices, utilization; on-chain mappings for caps and parameters where deployed.
 - **Private user activity:** shielded records for user flows on Aleo.
 - **Lending math tests:** `program/lending_math_tests` with offline **`leo test`** for rate/index math.
@@ -169,7 +169,7 @@ Vault work runs through an **in-process queue** (default concurrency **1**) to p
 ## Roadmap
 
 - **Now:** Testnet lending loop end-to-end, vault-backed credit payouts, dashboard + markets + history, docs, Shield wallet flows.
-- **Product direction:** Pursue a **dual-pool, Aave-style** architecture with **rigorous interest-rate models**—that design remains the strongest foundation for a serious money market on Aleo.
+- **Product direction:** **Multi-asset, cross-collateral, Aave-style** lending—unified program with per-reserve pools (ALEO, USDCx, USAD), utilization-based borrow/supply rates (linear base + slope, reserve factor), and index accrual; strongest foundation for a serious money market on Aleo.
 - **Explore:** **Flash loan** support (design and safety constraints TBD).
 - **Later:** Liquidations, governance, richer oracles, more assets and pool types—see notes under **`docs/`**.
 

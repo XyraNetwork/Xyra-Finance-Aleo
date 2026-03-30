@@ -246,7 +246,7 @@ const HeroSection = ({ onEnterApp }: { onEnterApp: () => void }) => (
           <div className="p-2 rounded-lg" style={{ background: '#0B1221' }}>
             <FeatherIcon name="eye-off" style={{ width: 16, height: 16, color: '#0ea5e9' }} />
           </div>
-          <h3 className="text-sm font-semibold text-white">Private Pools</h3>
+          <h3 className="text-sm font-semibold text-white">Private reserves</h3>
         </div>
         <div className="space-y-2">
           <div className="h-1.5 w-full rounded-full overflow-hidden" style={{ background: '#0B1221' }}>
@@ -380,10 +380,10 @@ const ArchitectureSection = () => {
 
 const featureCards = [
   { icon: 'briefcase', title: 'Institutional Grade', desc: 'Manage corporate treasuries without broadcasting capital moves to competitors or the public.' },
-  { icon: 'check-circle', title: 'Provable Solvency', desc: 'Despite hidden user balances, the global pool state and protocol solvency are mathematically proven via ZK.' },
+  { icon: 'check-circle', title: 'Provable Solvency', desc: 'Despite hidden user balances, on-chain reserve totals and protocol solvency are mathematically proven via ZK.' },
   { icon: 'layers', title: 'Composable Yield', desc: 'Supplied assets generate private yield-bearing tokens, composable with other Aleo DeFi protocols.' },
   { icon: 'shield', title: 'Compliance Rails', desc: 'Optional zK-KYC integrations allow whitelisted pools without exposing underlying identity data.' },
-  { icon: 'activity', title: 'Dynamic Rates', desc: 'Algorithmic interest rates based on pool utilization, updated securely via Oracle attestations.' },
+  { icon: 'activity', title: 'Dynamic Rates', desc: 'Per-reserve borrow and supply rates from utilization (Aave-style linear curve), with on-chain parameters and oracle-backed prices.' },
   { icon: 'trending-up', title: 'Future ZK Credit', desc: 'Foundation built to support uncollateralized lending via private on-chain reputation and credit scoring.' },
 ];
 
@@ -446,9 +446,11 @@ const RoadmapSection = () => (
           <h4 className="mb-1 text-xs tracking-widest" style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#0ea5e9' }}>PHASE 1 (CURRENT)</h4>
           <h3 className="mb-3 font-bold text-lg text-white">Private Lending Core</h3>
           <ul className="text-sm space-y-2" style={{ color: '#94a3b8' }}>
-            <li className="flex items-start gap-2"><FeatherIcon name="check" style={{ width: 12, height: 12, color: '#0ea5e9', marginTop: 4, flexShrink: 0 } as React.CSSProperties} /> Single-asset private pools</li>
-            <li className="flex items-start gap-2"><FeatherIcon name="check" style={{ width: 12, height: 12, color: '#0ea5e9', marginTop: 4, flexShrink: 0 } as React.CSSProperties} /> Overcollateralized borrowing</li>
-            <li className="flex items-start gap-2"><FeatherIcon name="check" style={{ width: 12, height: 12, color: '#0ea5e9', marginTop: 4, flexShrink: 0 } as React.CSSProperties} /> Testnet deployment</li>
+            <li className="flex items-start gap-2"><FeatherIcon name="check" style={{ width: 12, height: 12, color: '#0ea5e9', marginTop: 4, flexShrink: 0 } as React.CSSProperties} /> Dual-pool Aave-style (ALEO + stables, one program)</li>
+            <li className="flex items-start gap-2"><FeatherIcon name="check" style={{ width: 12, height: 12, color: '#0ea5e9', marginTop: 4, flexShrink: 0 } as React.CSSProperties} /> Utilization-based rates &amp; compound indices</li>
+            <li className="flex items-start gap-2"><FeatherIcon name="check" style={{ width: 12, height: 12, color: '#0ea5e9', marginTop: 4, flexShrink: 0 } as React.CSSProperties} /> Cross-collateral portfolio health</li>
+            <li className="flex items-start gap-2"><FeatherIcon name="check" style={{ width: 12, height: 12, color: '#0ea5e9', marginTop: 4, flexShrink: 0 } as React.CSSProperties} /> Flash loans (ALEO path; more reserves planned)</li>
+            <li className="flex items-start gap-2"><FeatherIcon name="check" style={{ width: 12, height: 12, color: '#0ea5e9', marginTop: 4, flexShrink: 0 } as React.CSSProperties} /> Aleo testnet + live app</li>
           </ul>
         </div>
       </div>
@@ -459,11 +461,11 @@ const RoadmapSection = () => (
         <div className="flex items-center justify-center rounded-full flex-shrink-0" style={{ zIndex: 20, background: '#0B1221', width: 32, height: 32, border: '2px solid #6366f1', boxShadow: '0 0 0 4px rgba(0,0,0,0.5)' }} />
         <div className="rounded-2xl px-6 py-5" style={{ ...customStyles.glassPanel, width: '40%', borderRight: '4px solid #6366f1', opacity: 0.8 }}>
           <h4 className="mb-1 text-xs tracking-widest" style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#6366f1' }}>PHASE 2</h4>
-          <h3 className="mb-3 font-bold text-lg text-white">Multi-Asset &amp; Mainnet</h3>
+          <h3 className="mb-3 font-bold text-lg text-white">Mainnet &amp; scale</h3>
           <ul className="text-sm space-y-2" style={{ color: '#94a3b8' }}>
-            <li className="flex items-start gap-2"><div style={{ width: 4, height: 4, background: '#6366f1', borderRadius: '50%', marginTop: 8, flexShrink: 0 }} /> Multi-asset pool support</li>
-            <li className="flex items-start gap-2"><div style={{ width: 4, height: 4, background: '#6366f1', borderRadius: '50%', marginTop: 8, flexShrink: 0 }} /> Oracle integration</li>
-            <li className="flex items-start gap-2"><div style={{ width: 4, height: 4, background: '#6366f1', borderRadius: '50%', marginTop: 8, flexShrink: 0 }} /> Mainnet Alpha launch</li>
+            <li className="flex items-start gap-2"><div style={{ width: 4, height: 4, background: '#6366f1', borderRadius: '50%', marginTop: 8, flexShrink: 0 }} /> Mainnet-ready deployment &amp; security review</li>
+            <li className="flex items-start gap-2"><div style={{ width: 4, height: 4, background: '#6366f1', borderRadius: '50%', marginTop: 8, flexShrink: 0 }} /> Hardened oracles &amp; expanded risk parameters</li>
+            <li className="flex items-start gap-2"><div style={{ width: 4, height: 4, background: '#6366f1', borderRadius: '50%', marginTop: 8, flexShrink: 0 }} /> More reserves &amp; deeper liquidity</li>
           </ul>
         </div>
       </div>
@@ -496,7 +498,7 @@ const PageFooter = () => (
         <div style={{ position: 'relative', zIndex: 10 }}>
           <h2 className="text-2xl md:text-3xl font-bold text-white mb-2">Experience Private DeFi</h2>
           <p className="text-sm" style={{ color: '#94a3b8', fontFamily: "'IBM Plex Mono', monospace" }}>
-            Interact with the Xyra lending pool on Aleo Testnet today.
+            Interact with Xyra lending markets on Aleo Testnet today.
           </p>
         </div>
         <Link
