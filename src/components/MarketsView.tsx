@@ -53,10 +53,22 @@ const FeatherIcon = ({ name, className = '', style = {} }: { name: string, class
   return <>{icons[name] || null}</>;
 };
 
-const StatCard = ({ label, value }: { label: string, value: string | React.ReactNode }) => (
+const StatCard = ({
+  label,
+  value,
+  loading = false,
+}: {
+  label: string;
+  value: string | React.ReactNode;
+  loading?: boolean;
+}) => (
   <div style={customStyles.glassPanel} className="p-4 rounded-2xl border-white/5">
     <div className="text-[10px] text-slate-500 uppercase mb-1 font-mono">{label}</div>
-    <div className="text-lg font-bold text-white font-mono">{value}</div>
+    {loading ? (
+      <div className="h-6 w-24 rounded animate-pulse" style={{ backgroundColor: 'rgba(255,255,255,0.12)' }} />
+    ) : (
+      <div className="text-lg font-bold text-white font-mono">{value}</div>
+    )}
   </div>
 );
 
@@ -297,6 +309,7 @@ export function MarketsView() {
 
   const tvl = aleoTotalSupplied * (priceUsdAleo ?? 0) + usdcTotalSupplied * (priceUsdUsdcx ?? 0) + usadTotalSupplied * (priceUsdUsad ?? 0);
   const totalBorrowedUsd = aleoTotalBorrowed * (priceUsdAleo ?? 0) + usdcTotalBorrowed * (priceUsdUsdcx ?? 0) + usadTotalBorrowed * (priceUsdUsad ?? 0);
+  const statsLoading = loading || vaultLoading || vaultPricesLoading;
 
   const marketsData = [
     {
@@ -383,45 +396,58 @@ export function MarketsView() {
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 font-mono">
-            <StatCard label="Total Value Locked" value={formatLargeUsd(tvl)} />
-            <StatCard label="Total Borrowed" value={formatLargeUsd(totalBorrowedUsd)} />
+            <StatCard label="Total Value Locked" value={formatLargeUsd(tvl)} loading={statsLoading} />
+            <StatCard label="Total Borrowed" value={formatLargeUsd(totalBorrowedUsd)} loading={statsLoading} />
             <div className="hidden sm:block">
-              <StatCard label="Total Assets" value="3" />
+              <StatCard label="Total Assets" value="3" loading={statsLoading} />
             </div>
           </div>
         </div>
       </header>
 
-      {loading ? (
-        <div className="flex items-center justify-center py-16">
-          <span className="loading loading-spinner text-cyan-400" />
-        </div>
-      ) : (
-        <div>
-          <div style={customStyles.glassPanel} className="rounded-[2rem] overflow-hidden border border-white/5 shadow-2xl">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-white/5 bg-white/[0.02]">
-                    <th className="px-8 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest">Asset</th>
-                    <th className="px-6 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest text-right">Total Supplied</th>
-                    <th className="px-6 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest text-right">Total Borrowed</th>
-                    <th className="px-6 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest text-right">Available</th>
-                    <th className="px-6 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest text-right">Vault Balance <InfoTooltip tip="Backend vault wallet public balance for this asset. Not pool liquidity." /></th>
-                    <th className="px-6 py-6 text-[10px] font-mono font-bold text-cyan-400 uppercase tracking-widest text-right">Supply APY</th>
-                    <th className="px-8 py-6 text-[10px] font-mono font-bold text-indigo-400 uppercase tracking-widest text-right">Borrow APY</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {marketsData.map((market, index) => (
-                    <MarketRow key={market.id} market={market} isLast={index === marketsData.length - 1} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+      <div>
+        <div style={customStyles.glassPanel} className="rounded-[2rem] overflow-hidden border border-white/5 shadow-2xl">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-white/5 bg-white/[0.02]">
+                  <th className="px-8 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest">Asset</th>
+                  <th className="px-6 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest text-right">Total Supplied</th>
+                  <th className="px-6 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest text-right">Total Borrowed</th>
+                  <th className="px-6 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest text-right">Available</th>
+                  <th className="px-6 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest text-right">Vault Balance <InfoTooltip tip="Backend vault wallet public balance for this asset. Not pool liquidity." /></th>
+                  <th className="px-6 py-6 text-[10px] font-mono font-bold text-cyan-400 uppercase tracking-widest text-right">Supply APY</th>
+                  <th className="px-8 py-6 text-[10px] font-mono font-bold text-indigo-400 uppercase tracking-widest text-right">Borrow APY</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading
+                  ? [0, 1, 2].map((i) => (
+                      <tr key={i} className={`${i !== 2 ? 'border-b border-white/5' : ''}`}>
+                        <td className="px-8 py-8">
+                          <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 rounded-xl animate-pulse" style={{ backgroundColor: 'rgba(255,255,255,0.12)' }} />
+                            <div className="space-y-2">
+                              <div className="h-4 w-16 rounded animate-pulse" style={{ backgroundColor: 'rgba(255,255,255,0.12)' }} />
+                              <div className="h-3 w-24 rounded animate-pulse" style={{ backgroundColor: 'rgba(255,255,255,0.08)' }} />
+                            </div>
+                          </div>
+                        </td>
+                        {Array.from({ length: 6 }).map((_, idx) => (
+                          <td key={idx} className="px-6 py-8 text-right">
+                            <div className="h-4 w-20 ml-auto rounded animate-pulse" style={{ backgroundColor: 'rgba(255,255,255,0.10)' }} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))
+                  : marketsData.map((market, index) => (
+                      <MarketRow key={market.id} market={market} isLast={index === marketsData.length - 1} />
+                    ))}
+              </tbody>
+            </table>
           </div>
         </div>
-      )}
+      </div>
 
       <div className="mt-12 grid grid-cols-1 md:grid-cols-2 gap-8">
         <div style={customStyles.glassPanel} className="p-8 rounded-3xl border-white/5">
