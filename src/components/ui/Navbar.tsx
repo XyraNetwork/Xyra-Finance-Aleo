@@ -16,8 +16,8 @@ const customStyles: Record<string, React.CSSProperties> = {
     background: '#030712',
     border: '1px solid rgba(255,255,255,0.14)',
     borderRadius: '16px',
-    padding: '12px 24px',
-    width: '100%',
+    padding: '10px 12px',
+    width: '95%',
     maxWidth: '1240px',
     height: '64px',
     boxShadow:
@@ -27,6 +27,7 @@ const customStyles: Record<string, React.CSSProperties> = {
 
 const Navbar = () => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
   const router = useRouter();
   const { setVisible } = useWalletModal();
@@ -43,6 +44,11 @@ const Navbar = () => {
       setVisible(false);
     }
   }, [connected, setVisible]);
+
+  useEffect(() => {
+    setIsMobileMenuOpen(false);
+    setIsDropdownOpen(false);
+  }, [router.pathname]);
 
   const navItems = [
     { name: 'DASHBOARD', id: 'dashboard', href: '/dashboard' },
@@ -117,7 +123,7 @@ const Navbar = () => {
           borderRadius: '9999px',
           width: '95%',
           maxWidth: '1200px',
-          padding: '12px 24px',
+          padding: '10px 12px',
         }),
         position: 'fixed',
         top: '24px',
@@ -134,19 +140,35 @@ const Navbar = () => {
     >
       <div className="flex items-center justify-between w-full h-full">
         {/* Logo Section */}
-        <Link href="/" className="flex items-center group">
-          <XyraLogo size={36} />
+        <Link href="/" className="flex items-center group shrink-0">
+          <XyraLogo size={32} />
         </Link>
 
         {/* Navigation Links */}
-        <div className="flex items-center gap-10 h-full ml-12">
+        <div className="hidden md:flex items-center gap-10 h-full ml-12">
           {navItems.map((item) => (
             <NavLink key={item.id} item={item} />
           ))}
         </div>
 
+        {/* Mobile nav toggle */}
+        <button
+          type="button"
+          className="md:hidden inline-flex items-center justify-center w-10 h-10 rounded-xl border border-white/10 bg-white/5 text-slate-300"
+          onClick={() => setIsMobileMenuOpen((v) => !v)}
+          aria-label="Toggle navigation menu"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            {isMobileMenuOpen ? (
+              <path d="M18 6L6 18M6 6l12 12" />
+            ) : (
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            )}
+          </svg>
+        </button>
+
         {/* Action Section */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 shrink-0">
           {isLandingPage ? (
             <Link
               href="/dashboard"
@@ -165,21 +187,22 @@ const Navbar = () => {
                 className="inline-flex h-full w-full cursor-pointer items-center justify-center rounded-full text-sm font-medium text-white"
                 style={{
                   background: '#0B1221',
-                  padding: '4px 20px',
+                  padding: '4px 12px',
                   backdropFilter: 'blur(24px)',
                   fontFamily: "'Space Grotesk', sans-serif",
                   position: 'relative',
                   zIndex: 1,
                 }}
               >
-                Launch App
+                <span className="sm:hidden">Launch</span>
+                <span className="hidden sm:inline">Launch App</span>
               </span>
             </Link>
           ) : (
             <div className="flex items-center gap-2 relative">
               {/* Network Badge */}
               <div 
-                className="flex items-center gap-2 px-3 py-2 rounded-full border border-emerald-500/20 bg-emerald-500/5"
+                className="hidden lg:flex items-center gap-2 px-3 py-2 rounded-full border border-emerald-500/20 bg-emerald-500/5"
               >
                 <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.6)]" />
                 <span className="text-[10px] font-bold text-emerald-400 tracking-wider font-mono">
@@ -251,7 +274,7 @@ const Navbar = () => {
                   id="connect-wallet-btn"
                   onClick={() => setVisible(true)}
                   disabled={connecting}
-                  className="px-6 py-2 rounded-xl text-sm font-semibold text-white transition-all bg-[#0B1221] border border-white/10 hover:border-white/20 hover:bg-[#111827]"
+                  className="px-3 sm:px-6 py-2 rounded-xl text-sm font-semibold text-white transition-all bg-[#0B1221] border border-white/10 hover:border-white/20 hover:bg-[#111827]"
                   style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                 >
                   {connecting ? 'Connecting...' : 'Connect'}
@@ -261,6 +284,31 @@ const Navbar = () => {
           )}
         </div>
       </div>
+      {isMobileMenuOpen && (
+        <div
+          className="md:hidden absolute left-0 right-0 top-[calc(100%+10px)] rounded-2xl p-2 border border-white/10 shadow-2xl"
+          style={{ background: '#030712', backdropFilter: 'blur(20px)' }}
+        >
+          {navItems.map((item) => {
+            const isActive = router.pathname === item.href;
+            return (
+              <Link
+                key={item.id}
+                href={item.href}
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="block px-3 py-2.5 rounded-xl text-xs font-bold tracking-widest"
+                style={{
+                  color: isActive ? '#ffffff' : '#94a3b8',
+                  backgroundColor: isActive ? 'rgba(255,255,255,0.08)' : 'transparent',
+                  fontFamily: "'Space Grotesk', 'Inter', sans-serif",
+                }}
+              >
+                {item.name}
+              </Link>
+            );
+          })}
+        </div>
+      )}
     </nav>
   );
 };

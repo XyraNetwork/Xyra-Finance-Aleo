@@ -22,9 +22,9 @@ export default function Layout({
 
   return (
     <DashboardViewProvider>
-      <div className={`text-base-content flex min-h-screen flex-col ${isDashboard ? 'bg-[#030712]' : 'bg-[#030712]'}`}>
+      <div className={`text-base-content flex min-h-screen flex-col overflow-x-hidden ${isDashboard ? 'bg-[#030712]' : 'bg-[#030712]'}`}>
         <Navbar />
-        <main className={`flex flex-grow flex-col pt-32 ${isDashboard ? 'bg-[#030712] min-h-[calc(100vh-4rem)]' : 'bg-[#030712]'}`}>
+        <main className={`flex flex-grow flex-col pt-32 overflow-x-hidden ${isDashboard ? 'bg-[#030712] min-h-[calc(100vh-4rem)]' : 'bg-[#030712]'}`}>
           {children}
         </main>
         {/* {!isDashboard && <Footer />} */}

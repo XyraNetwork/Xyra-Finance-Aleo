@@ -214,9 +214,9 @@ const DocsPage: NextPageWithLayout = () => {
   }, []);
 
   return (
-    <div className="max-w-[1440px] mx-auto px-6 pt-16 sm:pt-20 pb-20 flex gap-12 font-sans text-slate-300">
+    <div className="w-full max-w-[1440px] mx-auto px-4 sm:px-6 pt-16 sm:pt-20 pb-20 flex gap-6 lg:gap-12 font-sans text-slate-300 overflow-x-hidden">
       <Sidebar activeSection={activeSection} />
-      <main className="flex-1 max-w-4xl animate-fade-in-up">
+      <main className="flex-1 max-w-4xl min-w-0 px-1 sm:px-0 overflow-x-hidden break-words [overflow-wrap:anywhere] animate-fade-in-up">
         
         <section id="overview" className="scroll-mt-32 mb-20">
           <div className="flex items-center gap-3 mb-4">
@@ -224,7 +224,7 @@ const DocsPage: NextPageWithLayout = () => {
               V1.0.0-TESTNET
             </span>
           </div>
-          <h1 className="text-5xl font-bold mb-8 text-white">
+          <h1 className="text-3xl sm:text-5xl font-bold mb-8 text-white">
             High-level <span style={customStyles.textGradientCyan}>Overview</span>
         </h1>
           <p className="text-xl text-slate-400 leading-relaxed mb-8">

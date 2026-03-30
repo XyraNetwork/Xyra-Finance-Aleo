@@ -125,6 +125,51 @@ const MarketRow = ({ market, isLast }: { market: any, isLast: boolean }) => {
   );
 };
 
+const MobileMarketCard = ({ market }: { market: any }) => (
+  <div style={customStyles.glassPanel} className="rounded-2xl border border-white/5 p-4">
+    <div className="flex items-center gap-3 mb-4">
+      <div className={`w-10 h-10 rounded-xl ${market.iconBg} border ${market.iconBorder} flex items-center justify-center p-2`}>
+        {market.image ? (
+          <img src={market.image} alt={market.name} className="w-full h-full object-contain" />
+        ) : (
+          <FeatherIcon name={market.icon} className={`${market.iconColor} w-full h-full`} />
+        )}
+      </div>
+      <div className="min-w-0">
+        <div className="text-white font-bold">{market.name}</div>
+        <div className="text-[10px] text-slate-500 font-mono">{market.subtitle}</div>
+      </div>
+    </div>
+
+    <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+      <div>
+        <div className="text-slate-500 uppercase tracking-wider mb-1">Supplied</div>
+        <div className="text-slate-200">{market.supplied} <span className="text-slate-500">{market.suppliedUnit}</span></div>
+      </div>
+      <div>
+        <div className="text-slate-500 uppercase tracking-wider mb-1">Borrowed</div>
+        <div className="text-slate-200">{market.borrowed} <span className="text-slate-500">{market.borrowedUnit}</span></div>
+      </div>
+      <div>
+        <div className="text-slate-500 uppercase tracking-wider mb-1">Available</div>
+        <div className="text-slate-200">{market.available} <span className="text-slate-500">{market.availableUnit}</span></div>
+      </div>
+      <div>
+        <div className="text-slate-500 uppercase tracking-wider mb-1">Vault</div>
+        <div className="text-slate-200 break-words">{market.vault}</div>
+      </div>
+      <div>
+        <div className="text-slate-500 uppercase tracking-wider mb-1">Supply APY</div>
+        <div className="text-cyan-400 font-bold">{market.supplyApy}</div>
+      </div>
+      <div>
+        <div className="text-slate-500 uppercase tracking-wider mb-1">Borrow APY</div>
+        <div className="text-indigo-400 font-bold">{market.borrowApy}</div>
+      </div>
+    </div>
+  </div>
+);
+
 export function MarketsView() {
   const [loading, setLoading] = useState(true);
   const [aleoTotalSupplied, setAleoTotalSupplied] = useState<number>(0);
@@ -297,7 +342,7 @@ export function MarketsView() {
   const fmtVault = (bal: number, priceUsd: number | null) => {
     if (vaultLoading || vaultPricesLoading) return '—';
     const usd = priceUsd == null ? null : bal * priceUsd;
-    return usd == null ? bal.toFixed(4) : `${bal.toFixed(4)} (~$${usd.toFixed(2)})`;
+    return usd == null ? bal.toFixed(2) : `${bal.toFixed(2)} (~$${usd.toFixed(2)})`;
   };
 
   const formatLargeUsd = (val: number | null) => {
@@ -376,7 +421,7 @@ export function MarketsView() {
       <header className="mb-12">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
           <div>
-            <div className="flex items-center gap-3 mb-4">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-4">
               <div
                 style={customStyles.glassPanel}
                 className="px-3 py-1 rounded-full border border-cyan-500/30 flex items-center gap-2"
@@ -389,16 +434,16 @@ export function MarketsView() {
                 Live on-chain metrics
               </div>
             </div>
-            <h1 className="text-5xl font-bold tracking-tight text-white mb-2" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>Markets</h1>
-            <p className="text-slate-400 font-light max-w-xl">
+            <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-white mb-2" style={{ fontFamily: "'IBM Plex Sans', sans-serif" }}>Markets</h1>
+            <p className="text-slate-400 font-light max-w-xl break-words">
               Unified pool telemetry across the Aleo dark pool. Real-time reserve analytics for shielded liquidity providers and borrowers.
             </p>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 font-mono">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 font-mono w-full md:w-auto">
             <StatCard label="Total Value Locked" value={formatLargeUsd(tvl)} loading={statsLoading} />
             <StatCard label="Total Borrowed" value={formatLargeUsd(totalBorrowedUsd)} loading={statsLoading} />
-            <div className="hidden sm:block">
+            <div className="hidden md:block">
               <StatCard label="Total Assets" value="3" loading={statsLoading} />
             </div>
           </div>
@@ -406,9 +451,26 @@ export function MarketsView() {
       </header>
 
       <div>
-        <div style={customStyles.glassPanel} className="rounded-[2rem] overflow-hidden border border-white/5 shadow-2xl">
+        <div className="md:hidden space-y-4">
+          {loading
+            ? [0, 1, 2].map((i) => (
+                <div key={i} style={customStyles.glassPanel} className="rounded-2xl border border-white/5 p-4">
+                  <div className="h-5 w-24 rounded animate-pulse mb-4" style={{ backgroundColor: 'rgba(255,255,255,0.12)' }} />
+                  <div className="grid grid-cols-2 gap-3">
+                    {Array.from({ length: 6 }).map((_, idx) => (
+                      <div key={idx} className="h-10 rounded animate-pulse" style={{ backgroundColor: 'rgba(255,255,255,0.08)' }} />
+                    ))}
+                  </div>
+                </div>
+              ))
+            : marketsData.map((market) => (
+                <MobileMarketCard key={market.id} market={market} />
+              ))}
+        </div>
+
+        <div style={customStyles.glassPanel} className="hidden md:block rounded-[2rem] overflow-hidden border border-white/5 shadow-2xl">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full min-w-[860px] text-left border-collapse">
               <thead>
                 <tr className="border-b border-white/5 bg-white/[0.02]">
                   <th className="px-8 py-6 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-widest">Asset</th>
