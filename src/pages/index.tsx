@@ -212,7 +212,7 @@ const HeroSection = ({ onEnterApp }: { onEnterApp: () => void }) => (
         className="text-lg md:text-xl font-light leading-relaxed mb-10"
         style={{ color: '#94a3b8', maxWidth: '560px', animation: 'slideUpFade 0.8s cubic-bezier(0.16, 1, 0.3, 1) 200ms forwards', opacity: 0, fontFamily: "'IBM Plex Sans', sans-serif" }}
       >
-        Supply, borrow, and manage capital with zero-knowledge privacy. Xyra eliminates MEV and protects your strategies while maintaining absolute on-chain solvency.
+        Supply, borrow, and manage capital on the Aleo blockchain with zero-knowledge privacy. Xyra eliminates MEV and protects your strategies while maintaining absolute on-chain solvency.
       </p>
 
       <div className="flex flex-col sm:flex-row items-center gap-6 w-full sm:w-auto" style={{ animation: 'slideUpFade 0.8s cubic-bezier(0.16, 1, 0.3, 1) 300ms forwards', opacity: 0 }}>
@@ -237,7 +237,7 @@ const HeroSection = ({ onEnterApp }: { onEnterApp: () => void }) => (
       </div>
     </div>
 
-    <div className="lg:w-1/2 relative w-full mt-12 lg:mt-0" style={{ height: '500px' }}>
+    <div className="lg:w-1/2 relative w-full mt-12 lg:mt-0 overflow-hidden" style={{ height: '500px' }}>
       <div className="absolute rounded-full pointer-events-none" style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 300, height: 300, border: '1px solid rgba(255,255,255,0.05)', animation: 'spin 40s linear infinite' }} />
       <div className="absolute rounded-full pointer-events-none" style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 400, height: 400, border: '1px dashed rgba(255,255,255,0.05)', animation: 'spin 60s linear reverse infinite' }} />
 
@@ -300,11 +300,11 @@ const ArchitectureSection = () => {
         </p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: '24px' }}>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Main card */}
         <div
-          className="rounded-3xl p-8 md:p-12 relative overflow-hidden"
-          style={{ ...customStyles.glassPanel, gridColumn: 'span 7', transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)', ...(hoveredCard === 'main' ? { background: 'rgba(11, 18, 33, 0.6)', borderColor: 'rgba(14, 165, 233, 0.3)', transform: 'translateY(-5px)', boxShadow: '0 20px 40px -10px rgba(14, 165, 233, 0.15)' } : {}) }}
+          className="rounded-3xl p-8 md:p-12 relative overflow-hidden lg:col-span-7"
+          style={{ ...customStyles.glassPanel, transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)', ...(hoveredCard === 'main' ? { background: 'rgba(11, 18, 33, 0.6)', borderColor: 'rgba(14, 165, 233, 0.3)', transform: 'translateY(-5px)', boxShadow: '0 20px 40px -10px rgba(14, 165, 233, 0.15)' } : {}) }}
           onMouseEnter={() => setHoveredCard('main')}
           onMouseLeave={() => setHoveredCard(null)}
         >
@@ -333,7 +333,7 @@ const ArchitectureSection = () => {
         </div>
 
         {/* Right column cards */}
-        <div className="flex flex-col gap-6" style={{ gridColumn: 'span 5' }}>
+        <div className="flex flex-col gap-6 lg:col-span-5">
           <div
             className="rounded-3xl p-8 flex-1"
             style={{ ...customStyles.glassPanel, transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)', ...(hoveredCard === 'offchain' ? { background: 'rgba(11, 18, 33, 0.6)', borderColor: 'rgba(14, 165, 233, 0.3)', transform: 'translateY(-5px)', boxShadow: '0 20px 40px -10px rgba(14, 165, 233, 0.15)' } : {}) }}
@@ -379,10 +379,10 @@ const ArchitectureSection = () => {
 // ─── Features Section ─────────────────────────────────────────────────────────
 
 const featureCards = [
-  { icon: 'briefcase', title: 'Institutional Grade', desc: 'Manage corporate treasuries without broadcasting capital moves to competitors or the public.' },
+  { icon: 'briefcase', title: 'Institutional Grade', desc: 'Manage corporate treasuries on the Aleo blockchain without broadcasting capital moves to competitors or the public.' },
   { icon: 'check-circle', title: 'Provable Solvency', desc: 'Despite hidden user balances, on-chain reserve totals and protocol solvency are mathematically proven via ZK.' },
   { icon: 'layers', title: 'Composable Yield', desc: 'Supplied assets generate private yield-bearing tokens, composable with other Aleo DeFi protocols.' },
-  { icon: 'shield', title: 'Compliance Rails', desc: 'Optional zK-KYC integrations allow whitelisted pools without exposing underlying identity data.' },
+  { icon: 'shield', title: 'Compliance Rails', desc: 'Optional zK-KYC integrations on the Aleo blockchain allow whitelisted pools without exposing underlying identity data.' },
   { icon: 'activity', title: 'Dynamic Rates', desc: 'Per-reserve borrow and supply rates from utilization (Aave-style linear curve), with on-chain parameters and oracle-backed prices.' },
   { icon: 'trending-up', title: 'Future ZK Credit', desc: 'Foundation built to support uncollateralized lending via private on-chain reputation and credit scoring.' },
 ];
@@ -397,7 +397,7 @@ const FeaturesSection = () => {
         <div className="text-center mb-16">
           <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">Protocol Features</h2>
           <p className="text-sm max-w-xl mx-auto" style={{ color: '#94a3b8', fontFamily: "'IBM Plex Mono', monospace" }}>
-            Designed for institutions and power users demanding financial privacy.
+            Built on the Aleo blockchain for institutions and power users demanding financial privacy.
           </p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -433,16 +433,16 @@ const RoadmapSection = () => (
       <div className="mx-auto rounded-full" style={{ width: 64, height: 4, background: '#0ea5e9', boxShadow: '0 0 10px rgba(14, 165, 233, 0.5)' }} />
     </div>
 
-    <div className="relative overflow-hidden p-4">
-      <div style={{ position: 'absolute', top: 0, bottom: 0, left: '50%', transform: 'translateX(-50%)', width: 1, background: 'rgba(255,255,255,0.2)' }} />
+    <div className="relative overflow-hidden p-2 sm:p-4">
+      <div className="hidden md:block" style={{ position: 'absolute', top: 0, bottom: 0, left: '50%', transform: 'translateX(-50%)', width: 1, background: 'rgba(255,255,255,0.2)' }} />
 
       {/* Phase 1 */}
-      <div className="mb-12 flex justify-between items-center w-full">
-        <div style={{ width: '40%' }} />
+      <div className="mb-12 flex justify-between items-start md:items-center w-full gap-3">
+        <div className="hidden md:block" style={{ width: '40%' }} />
         <div className="flex items-center justify-center rounded-full flex-shrink-0" style={{ zIndex: 20, background: '#0B1221', width: 32, height: 32, border: '2px solid #0ea5e9', boxShadow: '0 0 0 4px rgba(0,0,0,0.5)' }}>
           <div style={{ width: 12, height: 12, background: '#0ea5e9', borderRadius: '50%', animation: 'pulse 2s cubic-bezier(0.4,0,0.6,1) infinite' }} />
         </div>
-        <div className="rounded-2xl px-6 py-5" style={{ ...customStyles.glassPanel, width: '40%', borderLeft: '4px solid #0ea5e9' }}>
+        <div className="rounded-2xl px-4 sm:px-6 py-5 w-[calc(100%-44px)] md:w-[40%]" style={{ ...customStyles.glassPanel, borderLeft: '4px solid #0ea5e9' }}>
           <h4 className="mb-1 text-xs tracking-widest" style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#0ea5e9' }}>PHASE 1 (CURRENT)</h4>
           <h3 className="mb-3 font-bold text-lg text-white">Private Lending Core</h3>
           <ul className="text-sm space-y-2" style={{ color: '#94a3b8' }}>
@@ -456,10 +456,10 @@ const RoadmapSection = () => (
       </div>
 
       {/* Phase 2 */}
-      <div className="mb-12 flex justify-between items-center w-full" style={{ flexDirection: 'row-reverse' }}>
-        <div style={{ width: '40%' }} />
+      <div className="mb-12 flex md:flex-row-reverse justify-between items-start md:items-center w-full gap-3">
+        <div className="hidden md:block" style={{ width: '40%' }} />
         <div className="flex items-center justify-center rounded-full flex-shrink-0" style={{ zIndex: 20, background: '#0B1221', width: 32, height: 32, border: '2px solid #6366f1', boxShadow: '0 0 0 4px rgba(0,0,0,0.5)' }} />
-        <div className="rounded-2xl px-6 py-5" style={{ ...customStyles.glassPanel, width: '40%', borderRight: '4px solid #6366f1', opacity: 0.8 }}>
+        <div className="rounded-2xl px-4 sm:px-6 py-5 w-[calc(100%-44px)] md:w-[40%]" style={{ ...customStyles.glassPanel, borderRight: '4px solid #6366f1', opacity: 0.8 }}>
           <h4 className="mb-1 text-xs tracking-widest" style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#6366f1' }}>PHASE 2</h4>
           <h3 className="mb-3 font-bold text-lg text-white">Mainnet &amp; scale</h3>
           <ul className="text-sm space-y-2" style={{ color: '#94a3b8' }}>
@@ -471,10 +471,10 @@ const RoadmapSection = () => (
       </div>
 
       {/* Phase 3 */}
-      <div className="mb-12 flex justify-between items-center w-full">
-        <div style={{ width: '40%' }} />
+      <div className="mb-12 flex justify-between items-start md:items-center w-full gap-3">
+        <div className="hidden md:block" style={{ width: '40%' }} />
         <div className="flex items-center justify-center rounded-full flex-shrink-0" style={{ zIndex: 20, background: '#0B1221', width: 32, height: 32, border: '2px solid #a855f7', boxShadow: '0 0 0 4px rgba(0,0,0,0.5)' }} />
-        <div className="rounded-2xl px-6 py-5" style={{ ...customStyles.glassPanel, width: '40%', borderLeft: '4px solid #a855f7', opacity: 0.6 }}>
+        <div className="rounded-2xl px-4 sm:px-6 py-5 w-[calc(100%-44px)] md:w-[40%]" style={{ ...customStyles.glassPanel, borderLeft: '4px solid #a855f7', opacity: 0.6 }}>
           <h4 className="mb-1 text-xs tracking-widest" style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#c084fc' }}>PHASE 3</h4>
           <h3 className="mb-3 font-bold text-lg text-white">Institutional &amp; Credit</h3>
           <ul className="text-sm space-y-2" style={{ color: '#94a3b8' }}>

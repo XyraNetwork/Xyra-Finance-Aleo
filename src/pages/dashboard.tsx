@@ -3813,18 +3813,20 @@ const DashboardPage: NextPageWithLayout = () => {
 
             {/* Asset management table */}
             <div className="rounded-[32px] overflow-hidden mb-10" style={dashGlass}>
-              <div className="grid grid-cols-[2fr_1.2fr_1.2fr_1.2fr_1fr] gap-4 items-center px-8 py-5 font-mono text-xs text-slate-400 uppercase tracking-widest" style={{ backgroundColor: 'rgba(255,255,255,0.05)' }}>
-                <div>Asset</div>
-                <div>Wallet Balance</div>
-                <div>Supplied</div>
-                <div>Borrowed</div>
-                <div className="text-right">Manage</div>
-              </div>
-              {[
+              <div className="overflow-x-auto">
+                <div className="min-w-[920px]">
+                  <div className="grid grid-cols-[2fr_1.2fr_1.2fr_1.2fr_1fr] gap-4 items-center px-8 py-5 font-mono text-xs text-slate-400 uppercase tracking-widest" style={{ backgroundColor: 'rgba(255,255,255,0.05)' }}>
+                    <div>Asset</div>
+                    <div>Wallet Balance</div>
+                    <div>Supplied</div>
+                    <div>Borrowed</div>
+                    <div className="text-right">Manage</div>
+                  </div>
+                  {[
                 { id: 'aleo' as const, label: 'ALEO', wallet: privateAleoBalance ?? 0, supplied: supplyBalanceAleo, borrowed: borrowDebtAleo, sApy: supplyAPY, bApy: borrowAPY, image: '/logos/aleo-dark.svg' },
                 { id: 'usdc' as const, label: 'USDCx', wallet: privateUsdcBalance ?? 0, supplied: supplyBalanceUsdc, borrowed: borrowDebtUsdc, sApy: supplyAPYUsdc, bApy: borrowAPYUsdc, image: '/logos/usdc.svg' },
                 { id: 'usad' as const, label: 'USAD', wallet: privateUsadBalance ?? 0, supplied: supplyBalanceUsad, borrowed: borrowDebtUsad, sApy: supplyAPYUsad, bApy: borrowAPYUsad, image: '/logos/usad.svg' },
-              ].map((asset) => (
+                  ].map((asset) => (
                 <div key={asset.id} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
                   <div
                     className={`grid grid-cols-[2fr_1.2fr_1.2fr_1.2fr_1fr] gap-4 items-center px-8 py-5 cursor-pointer transition-colors ${expandedAsset === asset.id ? '' : 'hover:bg-white/5'}`}
@@ -4072,9 +4074,11 @@ const DashboardPage: NextPageWithLayout = () => {
           </div>
                   )}
                 </div>
-              ))}
-              <div className="px-8 py-4 text-xs text-slate-600 font-mono" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                <span>Showing 3 supported assets on Aleo</span>
+                  ))}
+                  <div className="px-8 py-4 text-xs text-slate-600 font-mono" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                    <span>Showing 3 supported assets on Aleo</span>
+                  </div>
+                </div>
               </div>
             </div>
           </>
@@ -4099,7 +4103,8 @@ const DashboardPage: NextPageWithLayout = () => {
             </div>
             ) : (
               <div className="rounded-[32px] overflow-hidden" style={dashGlass}>
-                <table className="w-full text-left border-collapse">
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[920px] text-left border-collapse">
                   <thead>
                     <tr className="font-mono text-xs text-slate-400 uppercase tracking-widest" style={{ backgroundColor: 'rgba(255,255,255,0.05)' }}>
                       <th className="px-8 py-4 font-medium">Type</th>
@@ -4157,7 +4162,8 @@ const DashboardPage: NextPageWithLayout = () => {
                       ));
                     })()}
                   </tbody>
-                </table>
+                  </table>
+                </div>
                 {txHistory.length > 10 && (() => {
                     const pageSize = 10;
                     const totalPages = Math.max(1, Math.ceil(txHistory.length / pageSize));
