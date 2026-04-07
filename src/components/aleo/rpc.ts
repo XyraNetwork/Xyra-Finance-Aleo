@@ -9,7 +9,7 @@ import {
   CURRENT_RPC_URL,
 } from '@/types';
 import { Network } from '@provablehq/aleo-types';
-import { frontendLogger } from '@/utils/logger';
+import { frontendLogger, safeJsonStringify } from '@/utils/logger';
 import { TREASURY_ADDRESS, getTreasuryRequestMessage } from '@/config/treasury';
 
 // Note: @aleohq/wasm is not imported directly due to WASM build issues in Next.js
@@ -345,6 +345,17 @@ const LENDING_INDEX_SCALE_ORACLE = BigInt('1000000000000');
 const LENDING_PRICE_SCALE_ORACLE = BigInt(1_000_000);
 /** Matches Leo `as u64` on public amounts and intermediates. */
 const LENDING_U64_MAX = (BigInt(1) << BigInt(64)) - BigInt(1);
+/** Matches `finalize_self_liquidate_debt` / `Mapping::get_or_use(asset_liq_bonus, _, 500u64)`. */
+const LENDING_LIQ_BONUS_DEFAULT_BPS = BigInt(500);
+
+/** Raw JSON-RPC result for debugging (some nodes nest `value`, others return the literal on `result`). */
+function unwrapMappingRpcPayload(res: unknown): unknown {
+  if (res == null || typeof res !== 'object') return res;
+  const o = res as Record<string, unknown>;
+  if ('value' in o && o.value !== undefined) return o.value;
+  if ('result' in o && o.result !== undefined) return o.result;
+  return res;
+}
 
 async function readMappingU64(programId: string, mapping: string, key: string): Promise<bigint | null> {
   try {
@@ -353,7 +364,7 @@ async function readMappingU64(programId: string, mapping: string, key: string): 
       mapping_name: mapping,
       key,
     });
-    const raw = res?.value ?? res ?? null;
+    const raw = unwrapMappingRpcPayload(res);
     if (raw == null) return null;
     const str = String(raw).replace(/u64$/i, '').trim();
     if (!str) return null;
@@ -1555,6 +1566,16 @@ export async function lendingSelfLiquidateDebtCredits(
   }
 
   const oracle = await fetchLendingOraclePublic(poolProgramId);
+  // Mirror on-chain `max_close_aleo` check to surface a clear error before wallet submission.
+  const realBorAleoMicro = Number(
+    (BigInt(pos.scaled.scaledBorNative) * oracle.borIdxAleo) / BigInt(1_000_000_000_000),
+  );
+  const maxCloseAleoMicro = Math.floor(realBorAleoMicro * 0.5);
+  if (repayMicro > maxCloseAleoMicro) {
+    throw new Error(
+      `Repay exceeds close-factor cap: max ${(maxCloseAleoMicro / 1_000_000).toFixed(6)} ALEO for current debt ${(realBorAleoMicro / 1_000_000).toFixed(6)} ALEO.`,
+    );
+  }
   const [tA, tU, tD] = await Promise.all([
     readMappingU64(poolProgramId, 'asset_liq_threshold', '0field'),
     readMappingU64(poolProgramId, 'asset_liq_threshold', '1field'),
@@ -1571,8 +1592,55 @@ export async function lendingSelfLiquidateDebtCredits(
     formatU64TripleStruct(oracle.borIdxAleo, oracle.borIdxUsdcx, oracle.borIdxUsad),
     formatU64TripleStruct(oracle.priceAleo, oracle.priceUsdcx, oracle.priceUsad),
     formatU64TripleStruct(tA ?? BigInt(0), tU ?? BigInt(0), tD ?? BigInt(0)),
-    `${(bonus ?? BigInt(0)).toString()}u64`,
+    `${(bonus ?? LENDING_LIQ_BONUS_DEFAULT_BPS).toString()}u64`,
   ];
+  try {
+    const payload = {
+      program: poolProgramId,
+      function: 'self_liquidate_debt_credits',
+      repayAmountHuman: repayAmount,
+      repayMicro,
+      seizeAsset,
+      posIdx,
+      payRecordIndex,
+      recordIndices: payRecordIndex >= 0 ? [posIdx, payRecordIndex] : [posIdx, 0],
+      feeMicro: DEFAULT_LENDING_FEE * 1_000_000,
+      inputs: inputs.map((inp, i) => ({
+        i,
+        type: typeof inp,
+        preview:
+          typeof inp === 'string'
+            ? inp.length > 400
+              ? `${inp.slice(0, 400)}… (${inp.length} chars)`
+              : inp
+            : String(inp).slice(0, 200),
+      })),
+      oracle: {
+        supIdx: {
+          aleo: oracle.supIdxAleo?.toString?.() ?? String(oracle.supIdxAleo),
+          usdcx: oracle.supIdxUsdcx?.toString?.() ?? String(oracle.supIdxUsdcx),
+          usad: oracle.supIdxUsad?.toString?.() ?? String(oracle.supIdxUsad),
+        },
+        borIdx: {
+          aleo: oracle.borIdxAleo?.toString?.() ?? String(oracle.borIdxAleo),
+          usdcx: oracle.borIdxUsdcx?.toString?.() ?? String(oracle.borIdxUsdcx),
+          usad: oracle.borIdxUsad?.toString?.() ?? String(oracle.borIdxUsad),
+        },
+        price: {
+          aleo: oracle.priceAleo?.toString?.() ?? String(oracle.priceAleo),
+          usdcx: oracle.priceUsdcx?.toString?.() ?? String(oracle.priceUsdcx),
+          usad: oracle.priceUsad?.toString?.() ?? String(oracle.priceUsad),
+        },
+      },
+      thresholds: { tA: tA?.toString?.() ?? String(tA), tU: tU?.toString?.() ?? String(tU), tD: tD?.toString?.() ?? String(tD) },
+      bonusBps: (bonus ?? LENDING_LIQ_BONUS_DEFAULT_BPS).toString(),
+    };
+    // eslint-disable-next-line no-console
+    console.log('[self_liquidate_debt_credits] submit payload', safeJsonStringify(payload, 2));
+    // Captured by frontendLogger console interception for export/debug.
+  } catch {
+    // logging must not block the tx
+  }
   const result = await executeTransaction({
     program: poolProgramId,
     function: 'self_liquidate_debt_credits',
@@ -1585,6 +1653,58 @@ export async function lendingSelfLiquidateDebtCredits(
   const tempId = result?.transactionId;
   if (!tempId) throw new Error('Liquidation failed: No transactionId returned.');
   return tempId;
+}
+
+/**
+ * Largest single `credits.aleo` record balance (microcredits). Self-liquidation spends one credits record per tx.
+ */
+export async function getCreditsMaxSingleRecordMicroAleo(
+  requestRecords: (program: string, includeSpent?: boolean) => Promise<any[]>,
+  decrypt?: (cipherText: string) => Promise<string>,
+): Promise<number> {
+  let records = await requestRecords(CREDITS_PROGRAM_ID, false);
+  if (!records || !Array.isArray(records)) records = [];
+
+  const getMicrocredits = (record: any): number => {
+    try {
+      if (record.data && record.data.microcredits) {
+        return parseInt(String(record.data.microcredits).replace('u64', ''), 10);
+      }
+      if (record.plaintext) {
+        const match = String(record.plaintext).match(/microcredits:\s*([\d_]+)u64/);
+        if (match && match[1]) return parseInt(match[1].replace(/_/g, ''), 10);
+      }
+    } catch {
+      // ignore
+    }
+    return 0;
+  };
+
+  const processRecord = async (r: any): Promise<number> => {
+    let val = getMicrocredits(r);
+    if (val === 0 && r.recordCiphertext && !r.plaintext && decrypt) {
+      try {
+        const decrypted = await decrypt(r.recordCiphertext);
+        if (decrypted) {
+          r.plaintext = decrypted;
+          val = getMicrocredits(r);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return val;
+  };
+
+  let max = 0;
+  for (let ri = 0; ri < records.length; ri++) {
+    const r = records[ri];
+    if (r.spent) continue;
+    const val = await processRecord(r);
+    const isSpendable = !!(r.plaintext || r.nonce || r._nonce || r.data?._nonce || r.ciphertext);
+    if (isSpendable && val > max) max = val;
+  }
+  return max;
 }
 
 /** @deprecated Use `lendingSelfLiquidateDebtCredits`. */
@@ -4836,15 +4956,6 @@ async function getMappingU64Big(programId: string, mappingName: string, key: str
       }
 }
 
-/** Raw JSON-RPC result for debugging (some nodes nest `value`, others return the literal on `result`). */
-function unwrapMappingRpcPayload(res: unknown): unknown {
-  if (res == null || typeof res !== 'object') return res;
-  const o = res as Record<string, unknown>;
-  if ('value' in o && o.value !== undefined) return o.value;
-  if ('result' in o && o.result !== undefined) return o.result;
-  return res;
-}
-
 export type MappingReadDebug = {
   mapping: string;
   key: string;
@@ -5150,41 +5261,145 @@ export async function getLiquidationPreviewAleo(
     const realBorU = (bU * iBU) / INDEX_SCALE;
     const realBorD = (bD * iBD) / INDEX_SCALE;
 
-    const weighted = (real: number, price: number, thr: number) => (real * price * thr) / (PRICE_SCALE * BPS);
-    const debt = (real: number, price: number) => (real * price) / PRICE_SCALE;
+    // `real*` are micro-token units. `weighted/debt` return micro-USD.
+    const weighted = (realMicro: number, priceMicroUsd: number, thrBps: number) =>
+      (realMicro * priceMicroUsd * thrBps) / (PRICE_SCALE * BPS);
+    const debt = (realMicro: number, priceMicroUsd: number) => (realMicro * priceMicroUsd) / PRICE_SCALE;
 
-    const thresholdCollateralUsd =
+    const thresholdCollateralUsdMicro =
       weighted(realSupA, pA, tA) + weighted(realSupU, pU, tU) + weighted(realSupD, pD, tD);
-    const totalDebtUsd = debt(realBorA, pA) + debt(realBorU, pU) + debt(realBorD, pD);
-    const liquidatable = totalDebtUsd > thresholdCollateralUsd;
+    const totalDebtUsdMicro = debt(realBorA, pA) + debt(realBorU, pU) + debt(realBorD, pD);
+    const liquidatable = totalDebtUsdMicro > thresholdCollateralUsdMicro;
 
-    const aleoDebt = realBorA;
-    const maxCloseAleo = Math.max(0, Math.min(aleoDebt, (aleoDebt * CLOSE_FACTOR_BPS) / BPS));
-    const repayAleoClamped = Math.max(0, Math.min(repayAleo, maxCloseAleo));
-    const repayMicro = Math.round(repayAleoClamped * 1_000_000);
-    const repayUsd = (repayMicro * pA) / PRICE_SCALE;
-    const seizeUsd = (repayUsd * (BPS + bonus)) / BPS;
+    const aleoDebtMicro = realBorA;
+    const maxCloseAleoMicro = Math.max(0, Math.min(aleoDebtMicro, (aleoDebtMicro * CLOSE_FACTOR_BPS) / BPS));
+    const repayInputMicro = Math.round(repayAleo * 1_000_000);
+    const repayMicro = Math.max(0, Math.min(repayInputMicro, maxCloseAleoMicro));
+    const repayAleoClamped = repayMicro / 1_000_000;
+    const repayUsdMicro = (repayMicro * pA) / PRICE_SCALE;
+    const seizeUsdMicro = (repayUsdMicro * (BPS + bonus)) / BPS;
     const seizePrice = seizeAsset === '0field' ? pA : seizeAsset === '1field' ? pU : pD;
-    const seizeAmount = seizePrice > 0 ? seizeUsd / seizePrice : 0;
-    const collateralSeizeAsset =
+    const seizeAmountMicro = seizePrice > 0 ? (seizeUsdMicro * PRICE_SCALE) / seizePrice : 0;
+    const collateralSeizeAssetMicro =
       seizeAsset === '0field' ? realSupA : seizeAsset === '1field' ? realSupU : realSupD;
 
     return {
       ok: true,
       liquidatable,
-      totalDebtUsd,
-      thresholdCollateralUsd,
-      aleoDebt,
-      maxCloseAleo,
+      totalDebtUsd: totalDebtUsdMicro / 1_000_000,
+      thresholdCollateralUsd: thresholdCollateralUsdMicro / 1_000_000,
+      aleoDebt: aleoDebtMicro / 1_000_000,
+      maxCloseAleo: maxCloseAleoMicro / 1_000_000,
       repayAleo: repayAleoClamped,
       seizeAsset,
-      collateralSeizeAsset,
-      seizeAmount,
-      seizeUsd,
+      collateralSeizeAsset: collateralSeizeAssetMicro / 1_000_000,
+      seizeAmount: seizeAmountMicro / 1_000_000,
+      seizeUsd: seizeUsdMicro / 1_000_000,
       liqBonusBps: bonus,
     };
   } catch (e: any) {
     return { ...zero, reason: e?.message || 'Failed to compute preview.' };
+  }
+}
+
+/** Flash self-liquidation UI: max repay (close factor ∩ largest credits record) and seize-asset options with collateral. */
+export type SelfLiquidationUiLimits = {
+  ok: boolean;
+  reason?: string;
+  maxCloseAleo: number;
+  maxCreditsSingleRecordAleo: number;
+  effectiveMaxRepayAleo: number;
+  seizeOptions: Array<'0field' | '1field' | '2field'>;
+  aleoDebt: number;
+  realSupAleo: number;
+  realSupUsdcx: number;
+  realSupUsad: number;
+};
+
+export async function getSelfLiquidationUiLimits(
+  programId: string,
+  requestRecords: (program: string, includeSpent?: boolean) => Promise<any[]>,
+  decrypt?: (cipherText: string) => Promise<string>,
+): Promise<SelfLiquidationUiLimits> {
+  const empty: SelfLiquidationUiLimits = {
+    ok: false,
+    reason: 'Unavailable.',
+    maxCloseAleo: 0,
+    maxCreditsSingleRecordAleo: 0,
+    effectiveMaxRepayAleo: 0,
+    seizeOptions: [],
+    aleoDebt: 0,
+    realSupAleo: 0,
+    realSupUsdcx: 0,
+    realSupUsad: 0,
+  };
+
+  try {
+    const scaled = await parseLatestLendingPositionScaled(requestRecords, programId, decrypt);
+    if (!scaled) {
+      return { ...empty, reason: 'No LendingPosition in wallet — open an account or refresh records.' };
+    }
+
+    const readU64 = async (mappingName: string, key: string): Promise<number> => {
+      try {
+        const res = await client.request('getMappingValue', {
+          program_id: programId,
+          mapping_name: mappingName,
+          key,
+        });
+        return parseMappingU64Response(res) ?? 0;
+      } catch {
+        return 0;
+      }
+    };
+
+    const sA = Number(scaled.scaledSupNative);
+    const sU = Number(scaled.scaledSupUsdcx);
+    const sD = Number(scaled.scaledSupUsad);
+    const bA = Number(scaled.scaledBorNative);
+
+    const [iSA, iSU, iSD, iBA] = await Promise.all([
+      readU64('supply_index', '0field'),
+      readU64('supply_index', '1field'),
+      readU64('supply_index', '2field'),
+      readU64('borrow_index', '0field'),
+    ]);
+
+    const INDEX_SCALE = 1_000_000_000_000;
+    const BPS = 10_000;
+    const CLOSE_FACTOR_BPS = 5_000;
+
+    const realSupA = (sA * iSA) / INDEX_SCALE; // micro token
+    const realSupU = (sU * iSU) / INDEX_SCALE; // micro token
+    const realSupD = (sD * iSD) / INDEX_SCALE; // micro token
+    const realBorA = (bA * iBA) / INDEX_SCALE; // micro token
+
+    const seizeOptions: Array<'0field' | '1field' | '2field'> = [];
+    if (Math.round(realSupA) > 0) seizeOptions.push('0field');
+    if (Math.round(realSupU) > 0) seizeOptions.push('1field');
+    if (Math.round(realSupD) > 0) seizeOptions.push('2field');
+
+    const aleoDebtMicro = realBorA;
+    const maxCloseAleoMicro = Math.max(0, Math.min(aleoDebtMicro, (aleoDebtMicro * CLOSE_FACTOR_BPS) / BPS));
+
+    const maxMicro = await getCreditsMaxSingleRecordMicroAleo(requestRecords, decrypt);
+    const maxCreditsSingleRecordAleo = maxMicro / 1_000_000;
+    const maxCloseAleo = maxCloseAleoMicro / 1_000_000;
+    const effectiveMaxRepayAleo = Math.max(0, Math.min(maxCloseAleo, maxCreditsSingleRecordAleo));
+
+    return {
+      ok: true,
+      maxCloseAleo,
+      maxCreditsSingleRecordAleo,
+      effectiveMaxRepayAleo,
+      seizeOptions,
+      aleoDebt: aleoDebtMicro / 1_000_000,
+      realSupAleo: realSupA / 1_000_000,
+      realSupUsdcx: realSupU / 1_000_000,
+      realSupUsad: realSupD / 1_000_000,
+    };
+  } catch (e: any) {
+    return { ...empty, reason: e?.message || 'Failed to load self-liquidation limits.' };
   }
 }
 

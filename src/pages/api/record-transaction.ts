@@ -10,7 +10,7 @@ import fs from 'fs';
 type Body = {
   wallet_address: string;
   tx_id: string;
-  type: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'flash_loan';
+  type: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'flash_loan' | 'open_position';
   asset: 'aleo' | 'usdcx' | 'usad';
   amount: number;
   program_id?: string | null;
@@ -68,7 +68,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!tx_id || typeof tx_id !== 'string' || !tx_id.trim()) {
     return res.status(400).json({ error: 'Missing or invalid tx_id' });
   }
-  const validTypes = ['deposit', 'withdraw', 'borrow', 'repay', 'flash_loan'];
+  const validTypes = ['deposit', 'withdraw', 'borrow', 'repay', 'flash_loan', 'open_position'];
   if (!validTypes.includes(type)) {
     return res.status(400).json({ error: 'Invalid type' });
   }

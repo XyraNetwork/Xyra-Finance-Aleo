@@ -43,6 +43,7 @@ import {
   getPositionNoteSchemaFromChain,
   POSITION_NOTE_SCHEMA_ON_CHAIN_V2,
   getLiquidationPreviewAleo,
+  getSelfLiquidationUiLimits,
   aleoFlashFeeMicro,
   ALEO_FLASH_PREMIUM_BPS,
   debugAllRecords,
@@ -68,6 +69,7 @@ import {
   type CrossCollateralChainCaps,
   type CrossCollateralWithdrawCaps,
   type LendingPositionScaled,
+  type SelfLiquidationUiLimits,
 } from '@/components/aleo/rpc';
 import { frontendLogger } from '@/utils/logger';
 import { CURRENT_NETWORK } from '@/types';
@@ -81,6 +83,9 @@ import {
 // Frontend app environment: 'dev' or 'prod' (default to dev for non-production NODE_ENV)
 const APP_ENV = process.env.NEXT_PUBLIC_APP_ENV;
 const isDevAppEnv = APP_ENV ? APP_ENV === 'dev' : process.env.NODE_ENV !== 'production';
+const ADMIN_WALLET_ADDRESS =
+  process.env.NEXT_PUBLIC_LENDING_ADMIN_ADDRESS ||
+  'aleo1rhgdu77hgyqd3xjj8ucu3jj9r2krwz6mnzyd80gncr5fxcwlh5rsvzp9px';
 
 /** Sprint 2: Flash tab panel for `mint_position_migration_note` + migration readout. */
 const SHOW_SPRINT2_MIGRATION_UI = process.env.NEXT_PUBLIC_SHOW_SPRINT2_MIGRATION_UI === 'true';
@@ -122,6 +127,7 @@ function txHistoryTypeLabel(type: string): string {
   if (t === 'borrow') return 'Borrow Tx';
   if (t === 'repay') return 'Repay Tx';
   if (t === 'flash_loan') return 'Flash loan Tx';
+  if (t === 'open_position') return 'Create position Tx';
   return `${t ? t.charAt(0).toUpperCase() + t.slice(1) : 'Program'} Tx`;
 }
 
@@ -462,6 +468,7 @@ const DashboardPage: NextPageWithLayout = () => {
     collateralSeizeAsset?: number;
     liqBonusBps?: number;
   }>({ loading: false, ok: false });
+  const [liqUiLimits, setLiqUiLimits] = useState<SelfLiquidationUiLimits | null>(null);
   const [chainPositionNoteSchema, setChainPositionNoteSchema] = useState<number | null>(null);
   const [posNoteLoading, setPosNoteLoading] = useState(false);
   const [posNoteStatus, setPosNoteStatus] = useState('');
@@ -471,7 +478,18 @@ const DashboardPage: NextPageWithLayout = () => {
   const [userPositionInitialized, setUserPositionInitialized] = useState<boolean>(false);
   /** Parsed private `LendingPosition` (v8) for caps / previews — no public mapping. */
   const [lendingPositionScaled, setLendingPositionScaled] = useState<LendingPositionScaled | null>(null);
-  const [openAccountLoading, setOpenAccountLoading] = useState(false);
+  /** Modal for `open_lending_account`: same flow as other txs (submit → poll → explorer). */
+  const [openAccountModalOpen, setOpenAccountModalOpen] = useState(false);
+  const [openAccountSubmitted, setOpenAccountSubmitted] = useState(false);
+  const [openAccountStatusMsg, setOpenAccountStatusMsg] = useState('');
+  /** True once submit finishes (success, timeout, chain reject, or catch). Allows closing the modal. */
+  const [openAccountFlowDone, setOpenAccountFlowDone] = useState(false);
+  // Admin controls (shown only for configured admin wallet)
+  const [adminAsset, setAdminAsset] = useState<'0field' | '1field' | '2field'>('0field');
+  const [adminPriceInput, setAdminPriceInput] = useState('');
+  const [adminSubmitting, setAdminSubmitting] = useState(false);
+  const [adminStatus, setAdminStatus] = useState('');
+  const [adminTxId, setAdminTxId] = useState<string | null>(null);
 
   // Transaction history from Supabase (by wallet address)
   type TxHistoryRow = {
@@ -845,6 +863,86 @@ const DashboardPage: NextPageWithLayout = () => {
     return msg || 'Unknown error';
   };
 
+  const isAdminWallet = !!publicKey && publicKey === ADMIN_WALLET_ADDRESS;
+
+  const handleAdminSetAssetPrice = async () => {
+    if (!isAdminWallet) {
+      setAdminStatus('Only the configured admin wallet can call this function.');
+      return;
+    }
+    if (!executeTransaction) {
+      setAdminStatus('Wallet not ready.');
+      return;
+    }
+    const human = Number(adminPriceInput);
+    if (!Number.isFinite(human) || human <= 0) {
+      setAdminStatus('Enter a valid positive price.');
+      return;
+    }
+    const priceScaled = BigInt(Math.round(human * 1_000_000));
+    if (priceScaled <= 0n) {
+      setAdminStatus('Scaled price must be > 0.');
+      return;
+    }
+    setAdminSubmitting(true);
+    setAdminStatus('Submitting set_asset_price…');
+    setAdminTxId(null);
+    try {
+      const tx = await executeTransaction({
+        program: LENDING_POOL_PROGRAM_ID,
+        function: 'set_asset_price',
+        inputs: [adminAsset, `${priceScaled.toString()}u64`],
+        fee: 0.2 * 1_000_000,
+        privateFee: false,
+      });
+      const txId = tx?.transactionId as string | undefined;
+      if (!txId) throw new Error('No transactionId returned.');
+      setAdminTxId(txId);
+      setAdminStatus(`Submitted (${txId.slice(0, 12)}…). Waiting for finalization…`);
+
+      let finalized = false;
+      const maxAttempts = 45;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (!transactionStatus) continue;
+        try {
+          const statusResult = await transactionStatus(txId);
+          const statusText =
+            typeof statusResult === 'string'
+              ? statusResult
+              : (statusResult as { status?: string })?.status ?? '';
+          const lower = statusText.toLowerCase();
+          if (lower === 'finalized' || lower === 'accepted') {
+            finalized = true;
+            break;
+          }
+          if (lower === 'rejected' || lower === 'failed' || lower === 'dropped') {
+            setAdminStatus(`Transaction ${lower}.`);
+            return;
+          }
+          setAdminStatus(`Transaction ${statusText || 'pending'}… (${attempt}/${maxAttempts})`);
+        } catch {
+          // keep polling
+        }
+      }
+      if (!finalized) {
+        setAdminStatus('Transaction not finalized in time. Check explorer.');
+        return;
+      }
+      setAdminStatus('Price updated on-chain. Refreshing pool state…');
+      await Promise.all([
+        refreshPoolState(true),
+        refreshUsdcPoolState(true),
+        refreshUsadPoolState(true),
+      ]).catch(() => { });
+      setAdminStatus('Price updated and pool state refreshed.');
+    } catch (e: unknown) {
+      setAdminStatus(getErrorMessage(e));
+    } finally {
+      setAdminSubmitting(false);
+    }
+  };
+
   const fetchVaultBalancesHuman = async (): Promise<{ aleo: number; usdcx: number; usad: number } | null> => {
     try {
       const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
@@ -1029,7 +1127,7 @@ const DashboardPage: NextPageWithLayout = () => {
   const saveTransactionToSupabase = async (
     walletAddress: string,
     txId: string,
-    type: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'flash_loan' | 'liquidation',
+    type: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'flash_loan' | 'liquidation' | 'open_position',
     asset: 'aleo' | 'usdc' | 'usad',
     amount: number,
     programId?: string,
@@ -2017,20 +2115,130 @@ const DashboardPage: NextPageWithLayout = () => {
     }
   };
 
-  const handleOpenLendingAccount = async () => {
+  const openOpenAccountModal = () => {
+    setOpenAccountSubmitted(false);
+    setOpenAccountStatusMsg('');
+    setOpenAccountFlowDone(false);
+    setOpenAccountModalOpen(true);
+    // Auto-submit so the modal opens directly in processing state.
+    setTimeout(() => {
+      void handleOpenDarkPoolPosition();
+    }, 0);
+  };
+
+  const closeOpenAccountModal = () => {
+    if (openAccountSubmitted && !openAccountFlowDone) return;
+    setOpenAccountModalOpen(false);
+    setOpenAccountSubmitted(false);
+    setOpenAccountFlowDone(false);
+  };
+
+  const handleOpenDarkPoolPosition = async () => {
+    setOpenAccountStatusMsg('');
     if (!executeTransaction) {
-      setStatusMessage('Wallet not ready.');
+      setOpenAccountStatusMsg('Wallet not ready.');
       return;
     }
-    setOpenAccountLoading(true);
+    if (!publicKey) {
+      setOpenAccountStatusMsg('Connect your wallet first.');
+      return;
+    }
+    setOpenAccountSubmitted(true);
+    setOpenAccountFlowDone(false);
+    setOpenAccountStatusMsg('Submitting transaction…');
     try {
       const tx = await lendingOpenLendingAccount(executeTransaction, LENDING_POOL_PROGRAM_ID);
-      setStatusMessage(`Open lending account submitted (${tx.slice(0, 12)}…). Refresh after finalization.`);
-      await refreshChainPortfolioCaps();
+      logAleoTxExplorer('Create Dark Pool position', tx);
+      let finalTxId = tx;
+      let finalized = false;
+      const maxAttempts = 45;
+      const delayMs = 2000;
+      setOpenAccountStatusMsg('Transaction submitted. Waiting for finalization…');
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (!transactionStatus) continue;
+        try {
+          const statusResult = await transactionStatus(tx);
+          const statusText =
+            typeof statusResult === 'string'
+              ? statusResult
+              : (statusResult as { status?: string })?.status ?? '';
+          const statusLower = (statusText || '').toLowerCase();
+          if (statusLower === 'finalized' || statusLower === 'accepted') {
+            finalized = true;
+            const resolvedId =
+              (typeof statusResult === 'object' && (statusResult as { transactionId?: string }).transactionId) || tx;
+            finalTxId = resolvedId;
+            break;
+          }
+          if (statusLower === 'rejected' || statusLower === 'failed' || statusLower === 'dropped') {
+            logPoolTxRejected('ALEO pool', statusLower, tx, {
+              action: 'open_position',
+              program: LENDING_POOL_PROGRAM_ID,
+            });
+            setOpenAccountStatusMsg(
+              `Transaction ${statusLower} on-chain. Check the explorer or try again.`,
+            );
+            setOpenAccountFlowDone(true);
+            return;
+          }
+          setOpenAccountStatusMsg(`Transaction ${statusText || 'pending'}… (${attempt}/${maxAttempts})`);
+        } catch {
+          // continue polling
+        }
+      }
+      if (!finalized) {
+        setOpenAccountStatusMsg('Transaction not finalized in time. Check the explorer and use Refresh.');
+        setOpenAccountFlowDone(true);
+        return;
+      }
+      setOpenAccountStatusMsg('Transaction finalized. Syncing your private position…');
+      await saveTransactionToSupabase(
+        publicKey,
+        finalTxId,
+        'open_position',
+        'aleo',
+        0,
+        LENDING_POOL_PROGRAM_ID,
+        null,
+      ).catch(() => { });
+      fetchTransactionHistory();
+      // Keep spinner visible and refresh in background until wallet exposes the new LendingPosition.
+      const maxRecordAttempts = 90; // ~3 minutes at 2s interval
+      const recordDelayMs = 2000;
+      let foundPosition = false;
+      for (let i = 1; i <= maxRecordAttempts; i++) {
+        setOpenAccountStatusMsg(`Syncing private position… (${i}/${maxRecordAttempts})`);
+        await new Promise((resolve) => setTimeout(resolve, recordDelayMs));
+        try {
+          await refreshChainPortfolioCaps();
+          if (requestRecords) {
+            const maybeScaled = await parseLatestLendingPositionScaled(
+              requestRecords,
+              LENDING_POOL_PROGRAM_ID,
+              decrypt,
+            );
+            if (maybeScaled != null) {
+              foundPosition = true;
+              break;
+            }
+          }
+        } catch {
+          // Keep polling until the position record appears.
+        }
+      }
+      if (foundPosition) {
+        setOpenAccountModalOpen(false);
+        setOpenAccountSubmitted(false);
+        setOpenAccountFlowDone(false);
+        setOpenAccountStatusMsg('');
+        return;
+      }
+      setOpenAccountStatusMsg('Position not visible yet. Keep this open or click Refresh.');
+      setOpenAccountFlowDone(true);
     } catch (e: unknown) {
-      setStatusMessage(getErrorMessage(e));
-    } finally {
-      setOpenAccountLoading(false);
+      setOpenAccountStatusMsg(getErrorMessage(e));
+      setOpenAccountFlowDone(true);
     }
   };
 
@@ -2143,6 +2351,46 @@ const DashboardPage: NextPageWithLayout = () => {
   }, [liqRepayAmountInput, liqSeizeAsset, publicKey, requestRecords, decrypt]);
 
   useEffect(() => {
+    if (view !== 'flash' || !connected || !requestRecords || !publicKey?.trim().startsWith('aleo1')) {
+      setLiqUiLimits(null);
+      return;
+    }
+    let cancelled = false;
+    setLiqUiLimits(null);
+    void (async () => {
+      try {
+        const lim = await getSelfLiquidationUiLimits(LENDING_POOL_PROGRAM_ID, requestRecords, decrypt);
+        if (!cancelled) setLiqUiLimits(lim);
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setLiqUiLimits({
+            ok: false,
+            reason: e instanceof Error ? e.message : 'Failed to load limits.',
+            maxCloseAleo: 0,
+            maxCreditsSingleRecordAleo: 0,
+            effectiveMaxRepayAleo: 0,
+            seizeOptions: [],
+            aleoDebt: 0,
+            realSupAleo: 0,
+            realSupUsdcx: 0,
+            realSupUsad: 0,
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [view, connected, publicKey, requestRecords, decrypt]);
+
+  useEffect(() => {
+    if (!liqUiLimits?.ok || !liqUiLimits.seizeOptions.length) return;
+    setLiqSeizeAsset((prev) =>
+      liqUiLimits.seizeOptions.includes(prev) ? prev : liqUiLimits.seizeOptions[0],
+    );
+  }, [liqUiLimits]);
+
+  useEffect(() => {
     if (!SHOW_SPRINT2_MIGRATION_UI || view !== 'flash' || !connected || !publicKey) {
       return;
     }
@@ -2165,6 +2413,12 @@ const DashboardPage: NextPageWithLayout = () => {
   const liquidationSubmitGate = useMemo(() => {
     if (liqLoading) return { disabled: true as const, reason: 'Submitting…' };
     if (!connected) return { disabled: true as const, reason: 'Connect wallet.' };
+    if (view === 'flash' && connected && publicKey?.trim().startsWith('aleo1') && liqUiLimits === null) {
+      return { disabled: true as const, reason: 'Loading repay limits…' };
+    }
+    if (liqUiLimits?.ok && liqUiLimits.seizeOptions.length === 0) {
+      return { disabled: true as const, reason: 'No collateral available to seize (zero supplied balances).' };
+    }
     if (liqPreview.loading) return { disabled: true as const, reason: 'Loading preview…' };
     const repayNum = Number(liqRepayAmountInput);
     if (!publicKey?.trim().startsWith('aleo1')) {
@@ -2190,6 +2444,23 @@ const DashboardPage: NextPageWithLayout = () => {
         reason: `Repay exceeds max close (${(liqPreview.maxCloseAleo ?? 0).toFixed(6)} ALEO).`,
       };
     }
+    if (liqUiLimits?.ok) {
+      const effMax = liqUiLimits.effectiveMaxRepayAleo;
+      const effMicro = Math.round(effMax * 1_000_000);
+      if (effMax <= 0 && repayMicro > LIQ_SUBMIT_SLACK_MICRO) {
+        return {
+          disabled: true as const,
+          reason:
+            'No effective max repay (check ALEO debt, close factor, and a single credits.aleo record large enough).',
+        };
+      }
+      if (effMax > 0 && repayMicro > effMicro + LIQ_SUBMIT_SLACK_MICRO) {
+        return {
+          disabled: true as const,
+          reason: `Repay exceeds max (${effMax.toFixed(6)} ALEO) — min(close factor cap, largest single credits record).`,
+        };
+      }
+    }
     const seizeMicro = Math.round((liqPreview.seizeAmount ?? 0) * 1_000_000);
     const collMicro = Math.round((liqPreview.collateralSeizeAsset ?? 0) * 1_000_000);
     if (seizeMicro > collMicro + LIQ_SUBMIT_SLACK_MICRO) {
@@ -2199,7 +2470,7 @@ const DashboardPage: NextPageWithLayout = () => {
       };
     }
     return { disabled: false as const, reason: null as string | null };
-  }, [connected, liqLoading, liqPreview, publicKey, liqRepayAmountInput]);
+  }, [connected, liqLoading, liqPreview, publicKey, liqRepayAmountInput, view, liqUiLimits]);
 
   const handleLiquidation = async () => {
     if (!connected || !publicKey || !executeTransaction || !requestRecords) {
@@ -3406,6 +3677,9 @@ const DashboardPage: NextPageWithLayout = () => {
     totalBorrowedUsdc !== null &&
     totalSuppliedUsad !== null &&
     totalBorrowedUsad !== null;
+
+  /** No private `LendingPosition` yet — show onboarding before portfolio table and stats. */
+  const needsDarkPoolPosition = dashboardDataReady && lendingPositionScaled === null;
   const availableAleo = Math.max(
     0,
     ((Number(totalSupplied) || 0) - (Number(totalBorrowed) || 0)) / 1_000_000,
@@ -4067,24 +4341,80 @@ const DashboardPage: NextPageWithLayout = () => {
               <div className="text-xs text-slate-500 font-mono truncate" title={publicKey ?? ''}>
                 Wallet: {publicKey ? `${publicKey.slice(0, 18)}…` : '—'}
               </div>
-              <input
-                type="number"
-                min={0}
-                step="any"
-                value={liqRepayAmountInput}
-                onChange={(e) => setLiqRepayAmountInput(e.target.value)}
-                placeholder="Repay amount (ALEO)"
-                className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-white outline-none"
-              />
+              <div className="flex gap-2 items-stretch">
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={liqRepayAmountInput}
+                  onChange={(e) => setLiqRepayAmountInput(e.target.value)}
+                  placeholder="Repay amount (ALEO)"
+                  className="flex-1 min-w-0 rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-white outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={!liqUiLimits?.ok || (liqUiLimits.effectiveMaxRepayAleo ?? 0) <= 0}
+                  onClick={() => {
+                    const v = liqUiLimits?.effectiveMaxRepayAleo;
+                    if (v == null || !Number.isFinite(v) || v <= 0) return;
+                    const s = v
+                      .toFixed(6)
+                      .replace(/\.?0+$/, '');
+                    setLiqRepayAmountInput(s || '0');
+                  }}
+                  className="shrink-0 rounded-xl bg-white/10 border border-white/15 px-3 py-2 text-sm text-slate-200 disabled:opacity-40"
+                >
+                  Max
+                </button>
+              </div>
+              {liqUiLimits === null && connected && publicKey?.trim().startsWith('aleo1') && (
+                <div className="text-xs text-slate-500">Loading repay limits…</div>
+              )}
+              {liqUiLimits?.ok && (
+                <div className="text-xs text-slate-500 space-y-0.5">
+                  <div>
+                    Max close (pool): {liqUiLimits.maxCloseAleo.toFixed(6)} ALEO · Largest single credits record:{' '}
+                    {liqUiLimits.maxCreditsSingleRecordAleo.toFixed(6)} ALEO
+                  </div>
+                  <div className="text-slate-400">
+                    Effective max (Min for tx):{' '}
+                    <span className="font-mono text-cyan-300/90">{liqUiLimits.effectiveMaxRepayAleo.toFixed(6)}</span> ALEO
+                  </div>
+                </div>
+              )}
               <select
-                value={liqSeizeAsset}
+                value={
+                  (() => {
+                    const opts =
+                      liqUiLimits?.ok === true
+                        ? liqUiLimits.seizeOptions
+                        : (['0field', '1field', '2field'] as const);
+                    return opts.includes(liqSeizeAsset) ? liqSeizeAsset : opts[0] ?? '0field';
+                  })()
+                }
                 onChange={(e) => setLiqSeizeAsset(e.target.value as '0field' | '1field' | '2field')}
-                className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-white outline-none"
+                disabled={liqUiLimits?.ok === true && liqUiLimits.seizeOptions.length === 0}
+                className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-white outline-none disabled:opacity-50"
               >
-                <option value="0field">Seize ALEO collateral</option>
-                <option value="1field">Seize USDCx collateral</option>
-                <option value="2field">Seize USAD collateral</option>
+                {liqUiLimits?.ok === true && liqUiLimits.seizeOptions.length === 0 ? (
+                  <option value="0field">No collateral (cannot seize)</option>
+                ) : (
+                  (liqUiLimits?.ok === true ? liqUiLimits.seizeOptions : (['0field', '1field', '2field'] as const)).map(
+                    (field) => (
+                      <option key={field} value={field}>
+                        {field === '0field'
+                          ? 'Seize ALEO collateral'
+                          : field === '1field'
+                            ? 'Seize USDCx collateral'
+                            : 'Seize USAD collateral'}
+                      </option>
+                    ),
+                  )
+                )}
               </select>
+              {liqUiLimits?.ok && liqUiLimits.seizeOptions.length === 0 && (
+                <div className="text-xs text-amber-300/90">No collateral to seize (all supplies are zero).</div>
+              )}
               <div className="rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-xs text-slate-300 space-y-1">
                 {liqPreview.loading ? (
                   <div>Loading liquidation preview…</div>
@@ -4399,6 +4729,58 @@ const DashboardPage: NextPageWithLayout = () => {
         </div>
       )}
 
+      {/* Create Dark Pool position — same modal pattern as Supply/Borrow (submit → poll → explorer) */}
+      {openAccountModalOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
+          onClick={(e) => {
+            const canClose = !openAccountSubmitted || openAccountFlowDone;
+            if (e.target === e.currentTarget && canClose) closeOpenAccountModal();
+          }}
+        >
+          <div
+            className="relative rounded-[24px] p-8 w-full max-w-md"
+            style={dashGlass}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-bold text-white">Create Dark Pool position</h2>
+              {(!openAccountSubmitted || openAccountFlowDone) && (
+                <button
+                  type="button"
+                  onClick={closeOpenAccountModal}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 transition-colors text-slate-400 text-lg"
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <div className="space-y-4">
+              {!openAccountFlowDone && (
+                <div className="flex flex-col items-center justify-center py-6 gap-3">
+                  <span className="loading loading-spinner loading-lg text-cyan-400" />
+                  <p className="text-sm text-slate-400 text-center">{openAccountStatusMsg || 'Processing…'}</p>
+                </div>
+              )}
+              {openAccountFlowDone && openAccountStatusMsg && (
+                <div className="rounded-lg px-4 py-3 text-sm text-center text-slate-300">{openAccountStatusMsg}</div>
+              )}
+              {openAccountFlowDone && (
+                <button
+                  type="button"
+                  onClick={closeOpenAccountModal}
+                  className="w-full py-3 rounded-xl font-bold text-white border border-white/10 hover:bg-white/10 transition-all"
+                >
+                  Close
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <main className="max-w-[1440px] mx-auto px-4 sm:px-8 pt-8 pb-20">
         {/* Page header */}
         <div className="flex flex-col md:flex-row md:items-end justify-between mb-10">
@@ -4409,16 +4791,6 @@ const DashboardPage: NextPageWithLayout = () => {
           <div className="flex flex-wrap gap-2 mt-6 md:mt-0 md:justify-end">
             {connected && (
               <>
-                <button
-                  type="button"
-                  onClick={handleOpenLendingAccount}
-                  disabled={openAccountLoading || lendingPositionScaled !== null}
-                  title="Creates an empty LendingPosition record (required once before deposit/borrow on v9)."
-                  className="px-4 py-2 rounded-xl text-sm font-mono transition-all self-end disabled:opacity-50 border border-cyan-500/30 text-cyan-200 hover:bg-cyan-500/10"
-                  style={dashGlass}
-                >
-                  {openAccountLoading ? 'Opening…' : 'Open lending account'}
-                </button>
                 <button
                   type="button"
                   onClick={() => { refreshPoolState(true); refreshUsdcPoolState(true); refreshUsadPoolState(true); }}
@@ -4559,9 +4931,103 @@ const DashboardPage: NextPageWithLayout = () => {
           </div>
         )}
 
-        {/* Connected — full dashboard */}
-        {connected && dashboardDataReady && (
+        {/* Connected — create private position first (no LendingPosition record yet) */}
+        {connected && dashboardDataReady && needsDarkPoolPosition && (
+          <section className="mb-10">
+            <div
+              className="rounded-[32px] px-8 py-14 sm:px-12 sm:py-16 text-center max-w-2xl mx-auto"
+              style={dashGlass}
+            >
+              <div
+                className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-6 border border-cyan-500/25 mx-auto"
+                style={{ backgroundColor: 'rgba(6,182,212,0.08)' }}
+              >
+                <svg
+                  className="w-8 h-8 text-cyan-400"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  aria-hidden
+                >
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                </svg>
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-bold text-white mb-3">Create your Dark Pool position</h2>
+              <p className="text-slate-400 text-sm sm:text-base leading-relaxed mb-8 max-w-md mx-auto">
+                One shielded transaction creates your private portfolio record on Aleo. After it finalizes, you can supply
+                assets, borrow against collateral, and see balances and health here.
+              </p>
+              <button
+                type="button"
+                onClick={openOpenAccountModal}
+                className="px-8 py-3.5 rounded-xl font-bold text-sm sm:text-base transition-all"
+                style={{ background: 'linear-gradient(to right, #22d3ee, #6366f1)', color: '#030712' }}
+              >
+                Create position
+              </button>
+              <p className="mt-6 text-xs text-slate-500 font-mono">Required once per wallet before supply and borrow.</p>
+            </div>
+          </section>
+        )}
+
+        {/* Connected — full dashboard (portfolio + positions) */}
+        {connected && dashboardDataReady && !needsDarkPoolPosition && (
           <>
+            {isAdminWallet && (
+              <section className="mb-8">
+                <div className="rounded-2xl p-5" style={dashGlass}>
+                  <div className="flex items-center justify-between gap-4 mb-4">
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">Admin Controls</h3>
+                      <p className="text-xs text-slate-400 mt-1 font-mono">Visible only for configured admin wallet</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3">
+                    <select
+                      value={adminAsset}
+                      onChange={(e) => setAdminAsset(e.target.value as '0field' | '1field' | '2field')}
+                      className="rounded-xl px-3 py-2 bg-transparent text-slate-200 border border-white/10"
+                    >
+                      <option value="0field">ALEO (0field)</option>
+                      <option value="1field">USDCx (1field)</option>
+                      <option value="2field">USAD (2field)</option>
+                    </select>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={adminPriceInput}
+                      onChange={(e) => setAdminPriceInput(e.target.value)}
+                      placeholder="Price in USD (e.g. 0.044563)"
+                      className="rounded-xl px-3 py-2 bg-transparent text-slate-100 border border-white/10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleAdminSetAssetPrice()}
+                      disabled={adminSubmitting}
+                      className="px-4 py-2 rounded-xl font-semibold disabled:opacity-50"
+                      style={{ background: 'linear-gradient(to right, #22d3ee, #6366f1)', color: '#030712' }}
+                    >
+                      {adminSubmitting ? 'Submitting…' : 'Set Asset Price'}
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">On-chain input uses `price * 1e6` (`u64`).</p>
+                  {adminStatus && <p className="text-sm text-slate-300 mt-3">{adminStatus}</p>}
+                  {adminTxId && isExplorerHash(adminTxId) && (
+                    <a
+                      href={getProvableExplorerTxUrl(adminTxId)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block text-cyan-400 text-sm mt-2 hover:text-cyan-300"
+                    >
+                      View admin tx in explorer ↗
+                    </a>
+                  )}
+                </div>
+              </section>
+            )}
+
             {/* Stats row */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
               {[
@@ -4579,6 +5045,27 @@ const DashboardPage: NextPageWithLayout = () => {
                 </div>
               ))}
             </div>
+
+            {healthFactor != null && healthFactor < 1 && (
+              <div
+                className="rounded-2xl p-5 mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
+                style={{ backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.35)' }}
+              >
+                <div>
+                  <p className="text-sm font-semibold text-red-300">Position at liquidation risk</p>
+                  <p className="text-sm text-red-200/90 mt-1">
+                    Health Factor is below 1.0. Repay debt or run self-liquidation to move back to a safe range.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setView('flash')}
+                  className="px-4 py-2 rounded-xl text-sm font-mono transition-all border border-red-300/40 text-red-100 hover:bg-red-500/15"
+                >
+                  Open Self-liquidation
+                </button>
+              </div>
+            )}
 
             {/* Asset management table */}
             <div className="rounded-[32px] overflow-hidden mb-10" style={dashGlass}>
@@ -4871,7 +5358,7 @@ const DashboardPage: NextPageWithLayout = () => {
         )}
 
         {/* Transaction History (same readiness gate as portfolio so the whole dashboard loads together) */}
-        {connected && dashboardDataReady && (
+        {connected && dashboardDataReady && !needsDarkPoolPosition && (
           <section className="mb-10">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-xl font-bold text-white">Transaction History</h3>
@@ -4922,7 +5409,9 @@ const DashboardPage: NextPageWithLayout = () => {
                       const start = (cur - 1) * pageSize;
                       return txHistory.slice(start, start + pageSize).map((row) => (
                         <tr key={row.id} style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }} className="hover:bg-white/5 transition-colors">
-                          <td className="px-8 py-5 capitalize text-slate-300">{row.type}</td>
+                          <td className="px-8 py-5 text-slate-300">
+                            {String(row.type).toLowerCase() === 'open_position' ? 'Create position' : row.type}
+                          </td>
                           <td className="px-8 py-5 text-slate-300">
                             <div className="flex items-center gap-3">
                               <img

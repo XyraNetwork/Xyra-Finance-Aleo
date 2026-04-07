@@ -513,9 +513,9 @@ app.post('/record-transaction', async (req, res) => {
     if (!tx_id || typeof tx_id !== 'string' || !tx_id.trim()) {
       return res.status(400).json({ error: 'Missing or invalid tx_id' });
     }
-    const validTypes = ['deposit', 'withdraw', 'borrow', 'repay', 'flash_loan'];
+    const validTypes = ['deposit', 'withdraw', 'borrow', 'repay', 'flash_loan', 'open_position'];
     if (!validTypes.includes(type)) {
-      return res.status(400).json({ error: 'Invalid type. Must be one of: deposit, withdraw, borrow, repay, flash_loan' });
+      return res.status(400).json({ error: 'Invalid type. Must be one of: deposit, withdraw, borrow, repay, flash_loan, open_position' });
     }
     const validAssets = ['aleo', 'usdcx', 'usad'];
     if (!validAssets.includes(asset)) {

@@ -9,7 +9,7 @@ struct U64Triple {
     x2: u64,
 }
 
-program xyra_lending_v24.aleo {
+program xyra_lending_v27.aleo {
     const INDEX_SCALE: u64       = 1_000_000_000_000u64;
     const SCALE: u64             = 10_000u64;
     const BLOCKS_PER_YEAR: u64   = 2_102_400u64;
@@ -300,19 +300,22 @@ program xyra_lending_v24.aleo {
         let l_wa_aleo: u128 = (ltv_aleo as u128);
         let den_wa_aleo: u128 = (PRICE_SCALE as u128) * (SCALE as u128);
         let max_u128_wa_aleo: u128 = 340282366920938463463374607431768211455u128;
-        let rp_times_l_ok_wa_aleo: bool = (l_wa_aleo == 0u128) || (rp_wa_aleo <= (max_u128_wa_aleo / l_wa_aleo));
+        let safe_l_wa_aleo: u128 = l_wa_aleo == 0u128 ? 1u128 : l_wa_aleo;
+        let rp_times_l_ok_wa_aleo: bool = (l_wa_aleo == 0u128) || (rp_wa_aleo <= (max_u128_wa_aleo / safe_l_wa_aleo));
         let weighted_aleo_after: u64 = rp_times_l_ok_wa_aleo ? (((rp_wa_aleo * l_wa_aleo) / den_wa_aleo) as u64) : ((((rp_wa_aleo / (PRICE_SCALE as u128)) * l_wa_aleo / (SCALE as u128)) as u64));
         let rp_wa_usdcx: u128 = (real_sup_usdcx_after as u128) * (price_usdcx as u128);
         let l_wa_usdcx: u128 = (ltv_usdcx as u128);
         let den_wa_usdcx: u128 = (PRICE_SCALE as u128) * (SCALE as u128);
         let max_u128_wa_usdcx: u128 = 340282366920938463463374607431768211455u128;
-        let rp_times_l_ok_wa_usdcx: bool = (l_wa_usdcx == 0u128) || (rp_wa_usdcx <= (max_u128_wa_usdcx / l_wa_usdcx));
+        let safe_l_wa_usdcx: u128 = l_wa_usdcx == 0u128 ? 1u128 : l_wa_usdcx;
+        let rp_times_l_ok_wa_usdcx: bool = (l_wa_usdcx == 0u128) || (rp_wa_usdcx <= (max_u128_wa_usdcx / safe_l_wa_usdcx));
         let weighted_usdcx_after: u64 = rp_times_l_ok_wa_usdcx ? (((rp_wa_usdcx * l_wa_usdcx) / den_wa_usdcx) as u64) : ((((rp_wa_usdcx / (PRICE_SCALE as u128)) * l_wa_usdcx / (SCALE as u128)) as u64));
         let rp_wa_usad: u128 = (real_sup_usad_after as u128) * (price_usad as u128);
         let l_wa_usad: u128 = (ltv_usad as u128);
         let den_wa_usad: u128 = (PRICE_SCALE as u128) * (SCALE as u128);
         let max_u128_wa_usad: u128 = 340282366920938463463374607431768211455u128;
-        let rp_times_l_ok_wa_usad: bool = (l_wa_usad == 0u128) || (rp_wa_usad <= (max_u128_wa_usad / l_wa_usad));
+        let safe_l_wa_usad: u128 = l_wa_usad == 0u128 ? 1u128 : l_wa_usad;
+        let rp_times_l_ok_wa_usad: bool = (l_wa_usad == 0u128) || (rp_wa_usad <= (max_u128_wa_usad / safe_l_wa_usad));
         let weighted_usad_after: u64 = rp_times_l_ok_wa_usad ? (((rp_wa_usad * l_wa_usad) / den_wa_usad) as u64) : ((((rp_wa_usad / (PRICE_SCALE as u128)) * l_wa_usad / (SCALE as u128)) as u64));
         let real_bor_aleo: u64 = (((scaled_bor_native as u128) * (bor_idx_aleo as u128) / (INDEX_SCALE as u128)) as u64);
         let real_bor_usdcx: u64 = (((scaled_bor_usdcx as u128) * (bor_idx_usdcx as u128) / (INDEX_SCALE as u128)) as u64);
@@ -404,19 +407,22 @@ program xyra_lending_v24.aleo {
         let l_waleo: u128 = (ltv_aleo as u128);
         let den_waleo: u128 = (PRICE_SCALE as u128) * (SCALE as u128);
         let max_u128_waleo: u128 = 340282366920938463463374607431768211455u128;
-        let rp_times_l_ok_waleo: bool = (l_waleo == 0u128) || (rp_waleo <= (max_u128_waleo / l_waleo));
+        let safe_l_waleo: u128 = l_waleo == 0u128 ? 1u128 : l_waleo;
+        let rp_times_l_ok_waleo: bool = (l_waleo == 0u128) || (rp_waleo <= (max_u128_waleo / safe_l_waleo));
         let weighted_aleo: u64 = rp_times_l_ok_waleo ? (((rp_waleo * l_waleo) / den_waleo) as u64) : ((((rp_waleo / (PRICE_SCALE as u128)) * l_waleo / (SCALE as u128)) as u64));
         let rp_wusdcx: u128 = (real_sup_usdcx as u128) * (price_usdcx as u128);
         let l_wusdcx: u128 = (ltv_usdcx as u128);
         let den_wusdcx: u128 = (PRICE_SCALE as u128) * (SCALE as u128);
         let max_u128_wusdcx: u128 = 340282366920938463463374607431768211455u128;
-        let rp_times_l_ok_wusdcx: bool = (l_wusdcx == 0u128) || (rp_wusdcx <= (max_u128_wusdcx / l_wusdcx));
+        let safe_l_wusdcx: u128 = l_wusdcx == 0u128 ? 1u128 : l_wusdcx;
+        let rp_times_l_ok_wusdcx: bool = (l_wusdcx == 0u128) || (rp_wusdcx <= (max_u128_wusdcx / safe_l_wusdcx));
         let weighted_usdcx: u64 = rp_times_l_ok_wusdcx ? (((rp_wusdcx * l_wusdcx) / den_wusdcx) as u64) : ((((rp_wusdcx / (PRICE_SCALE as u128)) * l_wusdcx / (SCALE as u128)) as u64));
         let rp_wusad: u128 = (real_sup_usad as u128) * (price_usad as u128);
         let l_wusad: u128 = (ltv_usad as u128);
         let den_wusad: u128 = (PRICE_SCALE as u128) * (SCALE as u128);
         let max_u128_wusad: u128 = 340282366920938463463374607431768211455u128;
-        let rp_times_l_ok_wusad: bool = (l_wusad == 0u128) || (rp_wusad <= (max_u128_wusad / l_wusad));
+        let safe_l_wusad: u128 = l_wusad == 0u128 ? 1u128 : l_wusad;
+        let rp_times_l_ok_wusad: bool = (l_wusad == 0u128) || (rp_wusad <= (max_u128_wusad / safe_l_wusad));
         let weighted_usad: u64 = rp_times_l_ok_wusad ? (((rp_wusad * l_wusad) / den_wusad) as u64) : ((((rp_wusad / (PRICE_SCALE as u128)) * l_wusad / (SCALE as u128)) as u64));
         let debt_aleo_usd: u64 = (((real_bor_aleo as u128) * (price_aleo as u128) / (PRICE_SCALE as u128)) as u64);
         let debt_usdcx_usd: u64 = (((real_bor_usdcx as u128) * (price_usdcx as u128) / (PRICE_SCALE as u128)) as u64);
@@ -747,19 +753,22 @@ program xyra_lending_v24.aleo {
         let l_thr_aleo: u128 = (liq_thr_aleo as u128);
         let den_thr_aleo: u128 = (PRICE_SCALE as u128) * (SCALE as u128);
         let max_u128_thr_aleo: u128 = 340282366920938463463374607431768211455u128;
-        let rp_times_l_ok_thr_aleo: bool = (l_thr_aleo == 0u128) || (rp_thr_aleo <= (max_u128_thr_aleo / l_thr_aleo));
+        let safe_l_thr_aleo: u128 = l_thr_aleo == 0u128 ? 1u128 : l_thr_aleo;
+        let rp_times_l_ok_thr_aleo: bool = (l_thr_aleo == 0u128) || (rp_thr_aleo <= (max_u128_thr_aleo / safe_l_thr_aleo));
         let collateral_thr_aleo: u64 = rp_times_l_ok_thr_aleo ? (((rp_thr_aleo * l_thr_aleo) / den_thr_aleo) as u64) : ((((rp_thr_aleo / (PRICE_SCALE as u128)) * l_thr_aleo / (SCALE as u128)) as u64));
         let rp_thr_usdcx: u128 = (real_sup_usdcx as u128) * (price_usdcx as u128);
         let l_thr_usdcx: u128 = (liq_thr_usdcx as u128);
         let den_thr_usdcx: u128 = (PRICE_SCALE as u128) * (SCALE as u128);
         let max_u128_thr_usdcx: u128 = 340282366920938463463374607431768211455u128;
-        let rp_times_l_ok_thr_usdcx: bool = (l_thr_usdcx == 0u128) || (rp_thr_usdcx <= (max_u128_thr_usdcx / l_thr_usdcx));
+        let safe_l_thr_usdcx: u128 = l_thr_usdcx == 0u128 ? 1u128 : l_thr_usdcx;
+        let rp_times_l_ok_thr_usdcx: bool = (l_thr_usdcx == 0u128) || (rp_thr_usdcx <= (max_u128_thr_usdcx / safe_l_thr_usdcx));
         let collateral_thr_usdcx: u64 = rp_times_l_ok_thr_usdcx ? (((rp_thr_usdcx * l_thr_usdcx) / den_thr_usdcx) as u64) : ((((rp_thr_usdcx / (PRICE_SCALE as u128)) * l_thr_usdcx / (SCALE as u128)) as u64));
         let rp_thr_usad: u128 = (real_sup_usad as u128) * (price_usad as u128);
         let l_thr_usad: u128 = (liq_thr_usad as u128);
         let den_thr_usad: u128 = (PRICE_SCALE as u128) * (SCALE as u128);
         let max_u128_thr_usad: u128 = 340282366920938463463374607431768211455u128;
-        let rp_times_l_ok_thr_usad: bool = (l_thr_usad == 0u128) || (rp_thr_usad <= (max_u128_thr_usad / l_thr_usad));
+        let safe_l_thr_usad: u128 = l_thr_usad == 0u128 ? 1u128 : l_thr_usad;
+        let rp_times_l_ok_thr_usad: bool = (l_thr_usad == 0u128) || (rp_thr_usad <= (max_u128_thr_usad / safe_l_thr_usad));
         let collateral_thr_usad: u64 = rp_times_l_ok_thr_usad ? (((rp_thr_usad * l_thr_usad) / den_thr_usad) as u64) : ((((rp_thr_usad / (PRICE_SCALE as u128)) * l_thr_usad / (SCALE as u128)) as u64));
         let debt_aleo_usd: u64 = (((real_bor_aleo as u128) * (price_aleo as u128) / (PRICE_SCALE as u128)) as u64);
         let debt_usdcx_usd: u64 = (((real_bor_usdcx as u128) * (price_usdcx as u128) / (PRICE_SCALE as u128)) as u64);
@@ -1055,15 +1064,13 @@ final fn finalize_withdraw_pos(
     Mapping::set(total_deposited, ASSET_ALEO, new_deposited_aleo);
     Mapping::set(total_deposited, ASSET_USDCX, new_deposited_usdcx);
     Mapping::set(total_deposited, ASSET_USAD, new_deposited_usad);
-    /// **`available_liquidity[payout]` (saturating):**
-    /// - **ALEO (`0field`):** **always** decrement by `amount` when `amount > 0`. Native credits leave the pool even when
-    ///   collateral burned was **only** USDCx/USAD (`burn_aleo == 0`). Skipping this broke **stable supply → ALEO out**
-    ///   (half/full) while **ALEO supply → USDCx/USAD out** still worked.
-    /// - **USDCx / USAD:** decrement only if that leg **burned** user collateral (`burn_usdcx` / `burn_usad` > 0).
-    ///   Pure cross-asset (e.g. ALEO collateral → stables out, `burn_usdcx == 0`) is vault-settled — do not write mapping.
-    if (asset_id == ASSET_ALEO) {
-        if (amount > 0u64) {
-            let prev_avail_aleo: u64 = Mapping::get_or_use(available_liquidity, ASSET_ALEO, 0u64);
+    /// **`available_liquidity[payout]` (saturating):** decrement `available_liquidity[asset_id]` by `amount`.
+    /// Gate on **`amount > 0`** only — **not** on `burn_*` from `burn_amts`:
+    /// cross-asset withdraw burns collateral on the ladder (e.g. ALEO first) while `asset_id` is the **vault payout**
+    /// (e.g. USDCx). `burn_usdcx` may be zero even when USDC is paid out; the idle pool to reduce is still `asset_id`.
+   if (asset_id == ASSET_ALEO) {
+        if (burn_aleo > 0u64) {
+            let prev_avail_aleo: u64 = Mapping::get_or_use(available_liquidity, asset_id, 0u64);
             let new_avail_aleo: u64 = prev_avail_aleo > amount ? prev_avail_aleo - amount : 0u64;
             Mapping::set(available_liquidity, ASSET_ALEO, new_avail_aleo);
         }
