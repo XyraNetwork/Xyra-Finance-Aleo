@@ -9,7 +9,7 @@ struct U64Triple {
     x2: u64,
 }
 
-program xyra_lending_v27.aleo {
+program xyra_lending_v28.aleo {
     const INDEX_SCALE: u64       = 1_000_000_000_000u64;
     const SCALE: u64             = 10_000u64;
     const BLOCKS_PER_YEAR: u64   = 2_102_400u64;
@@ -709,7 +709,7 @@ program xyra_lending_v27.aleo {
      * Self-liquidation: only the position owner can spend their `LendingPosition` and pay credits.
      * Replaces third-party liquidation (impossible without public borrower state or delegation).
      */
-    fn self_liquidate_debt_credits(
+    fn self_liquidate_and_payout(
         position: LendingPosition,
         pay_record: credits.aleo::credits,
         public repay_amount: u64,
@@ -784,6 +784,7 @@ program xyra_lending_v27.aleo {
         assert(repay_amount <= real_bor_aleo);
         let repay_usd: u64 = (((repay_amount as u128) * (price_aleo as u128) / (PRICE_SCALE as u128)) as u64);
         assert(repay_usd > 0u64);
+        // Self path: `liq_bonus_bps` must match `asset_liq_bonus[seize_asset]` (finalize). Small bps = near-par seize.
         let seize_usd: u64 = (((repay_usd as u128) * ((BPS_DENOMINATOR + liq_bonus_bps) as u128) / (BPS_DENOMINATOR as u128)) as u64);
         let seize_price: u64 = seize_asset == ASSET_ALEO ? price_aleo : seize_asset == ASSET_USDCX ? price_usdcx : price_usad;
         let seize_amount: u64 = (((seize_usd as u128) * (PRICE_SCALE as u128) / (seize_price as u128)) as u64);
@@ -811,7 +812,7 @@ program xyra_lending_v27.aleo {
         let (change, f_transfer): (credits.aleo::credits, Final) =
             credits.aleo::transfer_private_to_public(pay_record, POOL_VAULT_ADDRESS, repay_amount);
         return (new_position, change, final {
-            finalize_self_liquidate_debt(
+            finalize_self_liq_payout(
                 f_transfer,
                 repay_amount,
                 seize_asset,
@@ -973,7 +974,7 @@ final fn finalize_repay_pos(
     Mapping::set(available_liquidity, asset_in, prev_avail_in + amount);
 }
 
-final fn finalize_self_liquidate_debt(
+final fn finalize_self_liq_payout(
     public f_transfer: Final,
     public repay_amount: u64,
     public seize_asset: field,

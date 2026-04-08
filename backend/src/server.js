@@ -506,16 +506,27 @@ app.post('/record-transaction', async (req, res) => {
     }
   }
   try {
-    const { wallet_address, tx_id, type, asset, amount, program_id } = req.body || {};
+    const { wallet_address, tx_id, type, asset, amount, program_id, repay_amount } = req.body || {};
     if (!wallet_address || typeof wallet_address !== 'string' || !wallet_address.trim()) {
       return res.status(400).json({ error: 'Missing or invalid wallet_address' });
     }
     if (!tx_id || typeof tx_id !== 'string' || !tx_id.trim()) {
       return res.status(400).json({ error: 'Missing or invalid tx_id' });
     }
-    const validTypes = ['deposit', 'withdraw', 'borrow', 'repay', 'flash_loan', 'open_position'];
+    const validTypes = [
+      'deposit',
+      'withdraw',
+      'borrow',
+      'repay',
+      'flash_loan',
+      'open_position',
+      'self_liquidate_payout',
+    ];
     if (!validTypes.includes(type)) {
-      return res.status(400).json({ error: 'Invalid type. Must be one of: deposit, withdraw, borrow, repay, flash_loan, open_position' });
+      return res.status(400).json({
+        error:
+          'Invalid type. Must be one of: deposit, withdraw, borrow, repay, flash_loan, open_position, self_liquidate_payout',
+      });
     }
     const validAssets = ['aleo', 'usdcx', 'usad'];
     if (!validAssets.includes(asset)) {
@@ -525,12 +536,18 @@ app.post('/record-transaction', async (req, res) => {
     if (!Number.isFinite(amountNum) || amountNum < 0) {
       return res.status(400).json({ error: 'Missing or invalid amount' });
     }
+    const repayAmountNum =
+      repay_amount == null || repay_amount === '' ? null : Number(repay_amount);
+    if (repayAmountNum != null && (!Number.isFinite(repayAmountNum) || repayAmountNum < 0)) {
+      return res.status(400).json({ error: 'Invalid repay_amount' });
+    }
     const { data, error } = await insertTransactionRecord({
       wallet_address: wallet_address.trim(),
       tx_id: tx_id.trim(),
       type,
       asset,
       amount: amountNum,
+      repay_amount: repayAmountNum,
       program_id: program_id ? String(program_id).trim() : null,
     });
     if (error) {

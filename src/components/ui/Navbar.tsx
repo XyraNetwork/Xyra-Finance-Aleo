@@ -52,10 +52,11 @@ const Navbar = () => {
 
   const navItems = [
     { name: 'DASHBOARD', id: 'dashboard', href: '/dashboard' },
+    { name: 'LIQUIDATION', id: 'liquidation', href: '/liquidation' },
     {
       name: 'FLASH',
       id: 'flash',
-      href: '/dashboard?view=flash',
+      href: '/flash',
     },
     { name: 'MARKETS', id: 'markets', href: '/markets' },
     { name: 'DOCS', id: 'docs', href: '/docs' },
@@ -69,10 +70,14 @@ const Navbar = () => {
     if (id === 'flash') {
       return router.pathname === '/dashboard' && dashboardViewParam === 'flash';
     }
+    if (id === 'liquidation') {
+      return router.pathname === '/dashboard' && dashboardViewParam === 'liquidation';
+    }
     if (id === 'dashboard') {
       return (
         router.pathname === '/dashboard' &&
         dashboardViewParam !== 'flash' &&
+        dashboardViewParam !== 'liquidation' &&
         dashboardViewParam !== 'markets' &&
         dashboardViewParam !== 'docs'
       );

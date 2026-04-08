@@ -126,9 +126,27 @@ function txHistoryTypeLabel(type: string): string {
   if (t === 'withdraw') return 'Withdraw Tx';
   if (t === 'borrow') return 'Borrow Tx';
   if (t === 'repay') return 'Repay Tx';
-  if (t === 'flash_loan') return 'Flash loan Tx';
-  if (t === 'open_position') return 'Create position Tx';
-  return `${t ? t.charAt(0).toUpperCase() + t.slice(1) : 'Program'} Tx`;
+  if (t === 'flash_loan') return 'Flash Loan Tx';
+  if (t === 'open_position') return 'Open Position Tx';
+  if (t === 'self_liquidate_payout') return 'Self Liquidate Payout Tx';
+  const words = t
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+  return `${words || 'Program'} Tx`;
+}
+
+function txHistoryTypeText(type: string): string {
+  const t = String(type || '').toLowerCase();
+  if (t === 'flash_loan') return 'Flash Loan';
+  if (t === 'open_position') return 'Open Position';
+  if (t === 'self_liquidate_payout') return 'Self Liquidate Payout';
+  return t
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ') || 'Program';
 }
 
 function txHistoryAssetVaultLabel(asset: string): string {
@@ -239,7 +257,11 @@ function TxHistoryTrxPills({
   getProvableExplorerTxUrl: (id: string) => string;
 }) {
   const programHref = (explorerUrl && explorerUrl.trim()) || getProvableExplorerTxUrl(txId);
-  const needsVaultPayment = type === 'withdraw' || type === 'borrow' || type === 'flash_loan';
+  const needsVaultPayment =
+    type === 'withdraw' ||
+    type === 'borrow' ||
+    type === 'flash_loan' ||
+    type === 'self_liquidate_payout';
   const vaultAssetLabel = `${txHistoryAssetVaultLabel(asset)} Tx`;
   const firstLabel = txHistoryTypeLabel(type);
 
@@ -288,12 +310,14 @@ const DashboardPage: NextPageWithLayout = () => {
   const router = useRouter();
   const { view, setView } = useDashboardView();
 
-  // Sync URL to context when landing on /dashboard?view=markets or /dashboard?view=docs
+  // Sync URL to context when landing on /dashboard?view=...
   useEffect(() => {
     if (router.query.view === 'markets') {
       setView('markets');
     } else if (router.query.view === 'docs') {
       setView('docs');
+    } else if (router.query.view === 'liquidation') {
+      setView('liquidation');
     } else if (router.query.view === 'flash') {
       setView('flash');
     } else {
@@ -498,6 +522,7 @@ const DashboardPage: NextPageWithLayout = () => {
     type: string;
     asset: string;
     amount: number;
+    repay_amount?: number | null;
     explorer_url: string | null;
     vault_tx_id: string | null;
     vault_explorer_url: string | null;
@@ -1105,7 +1130,7 @@ const DashboardPage: NextPageWithLayout = () => {
     try {
       const { data, error } = await supabase
         .from('transaction_history')
-        .select('id, wallet_address, tx_id, type, asset, amount, program_id, explorer_url, vault_tx_id, vault_explorer_url, created_at')
+        .select('id, wallet_address, tx_id, type, asset, amount, repay_amount, program_id, explorer_url, vault_tx_id, vault_explorer_url, created_at')
         .eq('wallet_address', address)
         .order('created_at', { ascending: false })
         .limit(100);
@@ -1127,11 +1152,20 @@ const DashboardPage: NextPageWithLayout = () => {
   const saveTransactionToSupabase = async (
     walletAddress: string,
     txId: string,
-    type: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'flash_loan' | 'liquidation' | 'open_position',
+    type:
+      | 'deposit'
+      | 'withdraw'
+      | 'borrow'
+      | 'repay'
+      | 'flash_loan'
+      | 'liquidation'
+      | 'open_position'
+      | 'self_liquidate_payout',
     asset: 'aleo' | 'usdc' | 'usad',
     amount: number,
     programId?: string,
     _vaultTxId?: string | null,
+    repayAmount?: number | null,
   ) => {
     try {
       const res = await fetch('/api/record-transaction', {
@@ -1143,6 +1177,7 @@ const DashboardPage: NextPageWithLayout = () => {
           type,
           asset: asset === 'usdc' ? 'usdcx' : asset,
           amount,
+          repay_amount: repayAmount ?? null,
           program_id: programId ?? null,
         }),
       });
@@ -2351,7 +2386,7 @@ const DashboardPage: NextPageWithLayout = () => {
   }, [liqRepayAmountInput, liqSeizeAsset, publicKey, requestRecords, decrypt]);
 
   useEffect(() => {
-    if (view !== 'flash' || !connected || !requestRecords || !publicKey?.trim().startsWith('aleo1')) {
+    if (view !== 'liquidation' || !connected || !requestRecords || !publicKey?.trim().startsWith('aleo1')) {
       setLiqUiLimits(null);
       return;
     }
@@ -2413,7 +2448,7 @@ const DashboardPage: NextPageWithLayout = () => {
   const liquidationSubmitGate = useMemo(() => {
     if (liqLoading) return { disabled: true as const, reason: 'Submitting…' };
     if (!connected) return { disabled: true as const, reason: 'Connect wallet.' };
-    if (view === 'flash' && connected && publicKey?.trim().startsWith('aleo1') && liqUiLimits === null) {
+    if (view === 'liquidation' && connected && publicKey?.trim().startsWith('aleo1') && liqUiLimits === null) {
       return { disabled: true as const, reason: 'Loading repay limits…' };
     }
     if (liqUiLimits?.ok && liqUiLimits.seizeOptions.length === 0) {
@@ -2537,15 +2572,22 @@ const DashboardPage: NextPageWithLayout = () => {
         setLiqStatusMessage('Transaction not finalized in time. Check explorer.');
         return;
       }
-      await saveTransactionToSupabase(
-        publicKey,
-        finalTxId,
-        'liquidation',
-        liqSeizeAsset === '0field' ? 'aleo' : liqSeizeAsset === '1field' ? 'usdc' : 'usad',
-        repay,
-        LENDING_POOL_PROGRAM_ID,
-        null,
-      ).catch(() => { });
+      const seizeAssetKey =
+        liqSeizeAsset === '0field' ? 'aleo' : liqSeizeAsset === '1field' ? 'usdc' : 'usad';
+      const seizeOutHuman = liqPreview?.seizeAmount ?? 0;
+      const repayHuman = Number.isFinite(repay) && repay > 0 ? repay : null;
+      if (seizeOutHuman > 0) {
+        await saveTransactionToSupabase(
+          publicKey,
+          finalTxId,
+          'self_liquidate_payout',
+          seizeAssetKey,
+          seizeOutHuman,
+          LENDING_POOL_PROGRAM_ID,
+          null,
+          repayHuman,
+        ).catch(() => { });
+      }
       fetchTransactionHistory();
       setLiqStatusMessage('Liquidation finalized. Pool state refreshed.');
       await Promise.all([refreshPoolState(true), refreshUsdcPoolState(true), refreshUsadPoolState(true)]);
@@ -4286,10 +4328,10 @@ const DashboardPage: NextPageWithLayout = () => {
     return (
       <div className="max-w-[1200px] mx-auto w-full px-4 sm:px-6 pt-4 pb-16">
         <div className="mb-6">
-          <h1 className="text-3xl sm:text-4xl font-bold text-white">Flash & Liquidation</h1>
-          <p className="text-slate-400 mt-2">Sprint 1 tools for keeper testing on ALEO pool.</p>
+          <h1 className="text-3xl sm:text-4xl font-bold text-white">Flash</h1>
+          <p className="text-slate-400 mt-2">ALEO flash tooling and fee preview.</p>
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 gap-6">
           <div className="rounded-2xl p-5 border border-white/10 bg-slate-900/60">
             <h2 className="text-lg font-semibold text-white mb-3">Flash Loan (ALEO)</h2>
             <p className="text-xs text-slate-400 mb-4">
@@ -4331,136 +4373,18 @@ const DashboardPage: NextPageWithLayout = () => {
             </div>
           </div>
 
-          <div className="rounded-2xl p-5 border border-white/10 bg-slate-900/60">
-            <h2 className="text-lg font-semibold text-white mb-3">Self-liquidate ALEO debt</h2>
-            <p className="text-xs text-slate-400 mb-4">
-              v9 positions are private — only the position owner can run <span className="font-mono">self_liquidate_debt_credits</span>.
-              Repay your ALEO debt and seize collateral from your own position when underwater.
-            </p>
-            <div className="space-y-3">
-              <div className="text-xs text-slate-500 font-mono truncate" title={publicKey ?? ''}>
-                Wallet: {publicKey ? `${publicKey.slice(0, 18)}…` : '—'}
+          <div className="rounded-2xl p-5 border border-indigo-400/20 bg-indigo-500/[0.06]">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Need self-liquidation?</h2>
+                <p className="text-xs text-slate-300 mt-1">Moved to a dedicated page with cleaner controls.</p>
               </div>
-              <div className="flex gap-2 items-stretch">
-                <input
-                  type="number"
-                  min={0}
-                  step="any"
-                  value={liqRepayAmountInput}
-                  onChange={(e) => setLiqRepayAmountInput(e.target.value)}
-                  placeholder="Repay amount (ALEO)"
-                  className="flex-1 min-w-0 rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-white outline-none"
-                />
-                <button
-                  type="button"
-                  disabled={!liqUiLimits?.ok || (liqUiLimits.effectiveMaxRepayAleo ?? 0) <= 0}
-                  onClick={() => {
-                    const v = liqUiLimits?.effectiveMaxRepayAleo;
-                    if (v == null || !Number.isFinite(v) || v <= 0) return;
-                    const s = v
-                      .toFixed(6)
-                      .replace(/\.?0+$/, '');
-                    setLiqRepayAmountInput(s || '0');
-                  }}
-                  className="shrink-0 rounded-xl bg-white/10 border border-white/15 px-3 py-2 text-sm text-slate-200 disabled:opacity-40"
-                >
-                  Max
-                </button>
-              </div>
-              {liqUiLimits === null && connected && publicKey?.trim().startsWith('aleo1') && (
-                <div className="text-xs text-slate-500">Loading repay limits…</div>
-              )}
-              {liqUiLimits?.ok && (
-                <div className="text-xs text-slate-500 space-y-0.5">
-                  <div>
-                    Max close (pool): {liqUiLimits.maxCloseAleo.toFixed(6)} ALEO · Largest single credits record:{' '}
-                    {liqUiLimits.maxCreditsSingleRecordAleo.toFixed(6)} ALEO
-                  </div>
-                  <div className="text-slate-400">
-                    Effective max (Min for tx):{' '}
-                    <span className="font-mono text-cyan-300/90">{liqUiLimits.effectiveMaxRepayAleo.toFixed(6)}</span> ALEO
-                  </div>
-                </div>
-              )}
-              <select
-                value={
-                  (() => {
-                    const opts =
-                      liqUiLimits?.ok === true
-                        ? liqUiLimits.seizeOptions
-                        : (['0field', '1field', '2field'] as const);
-                    return opts.includes(liqSeizeAsset) ? liqSeizeAsset : opts[0] ?? '0field';
-                  })()
-                }
-                onChange={(e) => setLiqSeizeAsset(e.target.value as '0field' | '1field' | '2field')}
-                disabled={liqUiLimits?.ok === true && liqUiLimits.seizeOptions.length === 0}
-                className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-white outline-none disabled:opacity-50"
+              <Link
+                href="/liquidation"
+                className="rounded-xl border border-indigo-300/35 bg-indigo-500/20 px-4 py-2 text-sm font-medium text-indigo-200 hover:bg-indigo-500/30 transition-colors inline-flex items-center justify-center"
               >
-                {liqUiLimits?.ok === true && liqUiLimits.seizeOptions.length === 0 ? (
-                  <option value="0field">No collateral (cannot seize)</option>
-                ) : (
-                  (liqUiLimits?.ok === true ? liqUiLimits.seizeOptions : (['0field', '1field', '2field'] as const)).map(
-                    (field) => (
-                      <option key={field} value={field}>
-                        {field === '0field'
-                          ? 'Seize ALEO collateral'
-                          : field === '1field'
-                            ? 'Seize USDCx collateral'
-                            : 'Seize USAD collateral'}
-                      </option>
-                    ),
-                  )
-                )}
-              </select>
-              {liqUiLimits?.ok && liqUiLimits.seizeOptions.length === 0 && (
-                <div className="text-xs text-amber-300/90">No collateral to seize (all supplies are zero).</div>
-              )}
-              <div className="rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-xs text-slate-300 space-y-1">
-                {liqPreview.loading ? (
-                  <div>Loading liquidation preview…</div>
-                ) : (
-                  <>
-                    <div>
-                      Status:{' '}
-                      <span className={liqPreview.liquidatable ? 'text-rose-300' : 'text-emerald-300'}>
-                        {liqPreview.ok ? (liqPreview.liquidatable ? 'Liquidatable' : 'Healthy (not liquidatable)') : 'Unavailable'}
-                      </span>
-                    </div>
-                    <div>
-                      Debt / Threshold:{' '}
-                      ${(liqPreview.totalDebtUsd ?? 0).toFixed(2)} / ${(liqPreview.thresholdCollateralUsd ?? 0).toFixed(2)}
-                    </div>
-                    <div>Max close (ALEO): {(liqPreview.maxCloseAleo ?? 0).toFixed(6)}</div>
-                    <div>
-                      Est. seize: {(liqPreview.seizeAmount ?? 0).toFixed(6)}{' '}
-                      {liqSeizeAsset === '0field' ? 'ALEO' : liqSeizeAsset === '1field' ? 'USDCx' : 'USAD'} ({liqPreview.liqBonusBps ?? 0} bps bonus)
-                    </div>
-                    {!liqPreview.ok && liqPreview.reason && <div className="text-amber-300">{liqPreview.reason}</div>}
-                  </>
-                )}
-              </div>
-              {liquidationSubmitGate.disabled && !liqLoading && liquidationSubmitGate.reason && (
-                <div className="text-xs text-amber-300/90">{liquidationSubmitGate.reason}</div>
-              )}
-              <button
-                type="button"
-                disabled={liqLoading || liquidationSubmitGate.disabled}
-                onClick={handleLiquidation}
-                className="w-full rounded-xl bg-indigo-500/20 border border-indigo-400/30 px-3 py-2 text-indigo-300 disabled:opacity-50"
-              >
-                {liqLoading ? 'Submitting…' : 'Execute self-liquidation'}
-              </button>
-              {liqStatusMessage && <div className="text-sm text-slate-300">{liqStatusMessage}</div>}
-              {liqTxId && (
-                <a
-                  href={getProvableExplorerTxUrl(liqTxId)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-cyan-400 text-xs underline"
-                >
-                  View Liquidation Tx
-                </a>
-              )}
+                Open Liquidation
+              </Link>
             </div>
           </div>
         </div>
@@ -4509,6 +4433,430 @@ const DashboardPage: NextPageWithLayout = () => {
               </a>
             )}
           </div>
+        )}
+      </div>
+    );
+  }
+
+  if (view === 'liquidation') {
+    const formatLiqAmount = (value: number) => {
+      if (!Number.isFinite(value) || value <= 0) return '--';
+      return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+    };
+    const payoutSymbol = liqSeizeAsset === '0field' ? 'ALEO' : liqSeizeAsset === '1field' ? 'USDCx' : 'USAD';
+    const enteredRepay = Number(liqRepayAmountInput);
+    const enteredRepayDisplay = Number.isFinite(enteredRepay) && enteredRepay > 0 ? enteredRepay : 0;
+    const effectiveMaxRepay = liqUiLimits?.ok ? liqUiLimits.effectiveMaxRepayAleo : 0;
+    const canSelfLiquidateNow = !!(liqPreview.ok && liqPreview.liquidatable);
+    const liquidationHistory = txHistory.filter((row) => {
+      const t = String(row.type || '').toLowerCase();
+      return t === 'liquidation' || t === 'self_liquidate_payout';
+    });
+    return (
+      <div className="max-w-[1440px] mx-auto w-full px-4 sm:px-8 pt-8 pb-20">
+        <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-[#0a1324] via-[#0b1220] to-[#121a32] p-5 sm:p-8 mb-6">
+          <div className="pointer-events-none absolute -top-24 -right-20 h-72 w-72 rounded-full bg-cyan-500/20 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-24 -left-20 h-72 w-72 rounded-full bg-indigo-500/20 blur-3xl" />
+          <div className="relative">
+            <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300/80 mb-2">Risk Management</p>
+            <h1 className="text-3xl sm:text-5xl font-semibold text-white leading-tight">Self Liquidation</h1>
+            <div className="mt-3 w-full space-y-1.5 text-sm text-slate-300/90">
+              <p>Repay part of your ALEO loan and get one asset back as payout.</p>
+              <p className="text-slate-400">- Self liquidation is available only when your Health Factor drops below 1 (liquidation zone).</p>
+              <p className="text-slate-400">- Per transaction limit: up to 50% of current ALEO debt (and within one spendable credits note).</p>
+              <p className="text-slate-400">- Enter amount, select payout asset, check estimate, then confirm.</p>
+            </div>
+          </div>
+        </div>
+
+        {!connected && (connecting || !allowShowConnectCTA) && (
+          <div className="rounded-[32px] px-6 py-14 sm:p-20 flex flex-col items-center justify-center text-center border border-white/10 bg-slate-900/60">
+            <span className="loading loading-spinner loading-lg text-cyan-400 mb-4" />
+            <p className="text-sm text-slate-400">Loading wallet...</p>
+          </div>
+        )}
+
+        {!connected && !connecting && allowShowConnectCTA && (
+          <div className="rounded-[32px] px-6 py-14 sm:p-20 flex flex-col items-center justify-center text-center border border-white/10 bg-slate-900/60 relative overflow-hidden">
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{ background: 'radial-gradient(circle at center, rgba(6,182,212,0.05) 0%, transparent 70%)' }}
+            />
+            <div className="relative z-10 flex w-full max-w-lg flex-col items-center">
+              <h2 className="text-2xl font-bold mb-3 text-white">Please, connect your wallet</h2>
+              <p className="text-slate-400 max-w-md mx-auto mb-10">
+                Connect your Aleo wallet to view liquidation preview and submit self liquidation.
+              </p>
+              <div className="w-full flex justify-center">
+                <WalletModalButton
+                  disabled={connecting}
+                  className="!m-0 !min-h-0 !h-auto !rounded-xl !border !border-white/10 !bg-[#0B1221] !px-6 !py-2 !text-sm !font-semibold !text-white !shadow-none hover:!border-white/20 hover:!bg-[#111827] disabled:!cursor-wait disabled:!opacity-60"
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                >
+                  {connecting ? 'Connecting...' : 'Connect'}
+                </WalletModalButton>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {connected && !dashboardDataReady && (
+          <div className="grid grid-cols-1 xl:grid-cols-[1.35fr_1fr] gap-6 animate-pulse">
+            <div className="rounded-3xl border border-white/10 bg-slate-900/60 p-5 sm:p-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+                {[0, 1].map((i) => (
+                  <div key={i} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <div className="h-3 w-24 rounded mb-3 bg-white/10" />
+                    <div className="h-5 w-36 rounded bg-white/10" />
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-3">
+                <div className="h-4 w-48 rounded bg-white/10" />
+                <div className="h-12 rounded-2xl bg-white/10" />
+                <div className="h-12 rounded-2xl bg-white/10" />
+                <div className="h-4 w-40 rounded bg-white/10" />
+                <div className="h-12 rounded-2xl bg-white/10" />
+              </div>
+            </div>
+            <div className="rounded-3xl border border-white/10 bg-slate-900/60 p-5 sm:p-6">
+              <div className="h-16 rounded-2xl bg-white/10 mb-4" />
+              <div className="space-y-3">
+                <div className="h-20 rounded-2xl bg-white/10" />
+                <div className="h-20 rounded-2xl bg-white/10" />
+                <div className="h-20 rounded-2xl bg-white/10" />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {connected && dashboardDataReady && (
+          <div className="grid grid-cols-1 xl:grid-cols-[1.35fr_1fr] gap-6">
+          <div className="rounded-3xl border border-white/10 bg-slate-900/60 p-5 sm:p-6 backdrop-blur-xl">
+            {canSelfLiquidateNow && (
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 mb-5">
+                <p className="text-[11px] uppercase tracking-wide text-slate-400 mb-3">Liquidation flow</p>
+                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                  <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.06] p-3">
+                    <p className="text-[10px] uppercase tracking-wide text-cyan-300/80">You repay</p>
+                    <p className="mt-1 text-sm font-mono text-cyan-200">
+                      {formatLiqAmount(enteredRepayDisplay)} ALEO
+                    </p>
+                  </div>
+                  <div className="text-slate-500 text-lg">→</div>
+                  <div className="rounded-xl border border-indigo-400/20 bg-indigo-500/[0.06] p-3">
+                    <p className="text-[10px] uppercase tracking-wide text-indigo-300/80">You receive (est.)</p>
+                    <p className="mt-1 text-sm font-mono text-indigo-200">
+                      {formatLiqAmount(liqPreview.seizeAmount ?? 0)} {payoutSymbol}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {canSelfLiquidateNow ? (
+              <div className="space-y-3">
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] text-slate-300">
+                  In one self-liquidation, you can repay only up to the allowed part of your current debt.
+                  <span className="text-cyan-200"> Use Max</span> to auto-fill the highest safe amount.
+                </div>
+                <div className="flex gap-2 items-stretch">
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    max={effectiveMaxRepay > 0 ? effectiveMaxRepay : undefined}
+                    value={liqRepayAmountInput}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      const n = Number(raw);
+                      if (!Number.isFinite(n) || n <= 0 || effectiveMaxRepay <= 0) {
+                        setLiqRepayAmountInput(raw);
+                        return;
+                      }
+                      const capped = Math.min(n, effectiveMaxRepay);
+                      setLiqRepayAmountInput(String(capped));
+                    }}
+                    placeholder="Repay amount (ALEO)"
+                    className="flex-1 min-w-0 rounded-2xl bg-white/5 border border-white/10 px-4 py-3 text-white outline-none placeholder:text-slate-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={!liqUiLimits?.ok || (liqUiLimits.effectiveMaxRepayAleo ?? 0) <= 0}
+                    onClick={() => {
+                      const v = liqUiLimits?.effectiveMaxRepayAleo;
+                      if (v == null || !Number.isFinite(v) || v <= 0) return;
+                      const s = v.toFixed(6).replace(/\.?0+$/, '');
+                      setLiqRepayAmountInput(s || '0');
+                    }}
+                    className="shrink-0 rounded-2xl bg-white/10 border border-white/15 px-4 py-3 text-sm text-slate-200 disabled:opacity-40"
+                  >
+                    Max
+                  </button>
+                </div>
+
+                <select
+                  value={
+                    (() => {
+                      const opts =
+                        liqUiLimits?.ok === true
+                          ? liqUiLimits.seizeOptions
+                          : (['0field', '1field', '2field'] as const);
+                      return opts.includes(liqSeizeAsset) ? liqSeizeAsset : opts[0] ?? '0field';
+                    })()
+                  }
+                  onChange={(e) => setLiqSeizeAsset(e.target.value as '0field' | '1field' | '2field')}
+                  disabled={liqUiLimits?.ok === true && liqUiLimits.seizeOptions.length === 0}
+                  className="w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 text-white outline-none disabled:opacity-50"
+                >
+                  {liqUiLimits?.ok === true && liqUiLimits.seizeOptions.length === 0 ? (
+                    <option value="0field">No collateral available</option>
+                  ) : (
+                    (liqUiLimits?.ok === true ? liqUiLimits.seizeOptions : (['0field', '1field', '2field'] as const)).map((field) => (
+                      <option key={field} value={field}>
+                        {field === '0field' ? 'Payout in ALEO' : field === '1field' ? 'Payout in USDCx' : 'Payout in USAD'}
+                      </option>
+                    ))
+                  )}
+                </select>
+
+                {!liqPreview.ok && liqPreview.reason && !liquidationSubmitGate.reason && (
+                  <div className="text-xs text-amber-300">{liqPreview.reason}</div>
+                )}
+                {liquidationSubmitGate.disabled && !liqLoading && liquidationSubmitGate.reason && (
+                  <div className="text-xs text-amber-300/90">{liquidationSubmitGate.reason}</div>
+                )}
+
+                <button
+                  type="button"
+                  disabled={liqLoading || liquidationSubmitGate.disabled}
+                  onClick={handleLiquidation}
+                  className="w-full rounded-2xl bg-gradient-to-r from-cyan-500/30 to-indigo-500/30 border border-cyan-300/30 px-4 py-3 text-cyan-100 font-medium disabled:opacity-50"
+                >
+                  {liqLoading ? 'Submitting...' : 'Execute Self Liquidation'}
+                </button>
+                {liqStatusMessage && <div className="text-sm text-slate-300">{liqStatusMessage}</div>}
+                {liqTxId && (
+                  <a
+                    href={getProvableExplorerTxUrl(liqTxId)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-cyan-400 text-xs underline"
+                  >
+                    View Liquidation Tx
+                  </a>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/[0.06] p-4">
+                <p className="text-sm font-medium text-emerald-200">Your position is healthy</p>
+                <p className="text-xs text-emerald-100/80 mt-1">
+                  Self liquidation unlocks only if Health Factor drops below 1.0. Right now no action is needed.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Link
+                    href="/dashboard"
+                    className="rounded-xl border border-emerald-300/35 bg-emerald-500/20 px-3 py-2 text-xs font-medium text-emerald-100 hover:bg-emerald-500/30 transition-colors"
+                  >
+                    Open Dashboard
+                  </Link>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-3xl border border-white/10 bg-slate-900/60 p-5 sm:p-6 backdrop-blur-xl">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 mb-4">
+              <p className="text-[11px] uppercase tracking-wide text-slate-400">Position status</p>
+              <p className={`mt-1 text-sm font-medium ${liqPreview.liquidatable ? 'text-rose-300' : 'text-emerald-300'}`}>
+                {liqPreview.ok ? (liqPreview.liquidatable ? 'Liquidatable' : 'Healthy') : 'Unavailable'}
+              </p>
+            </div>
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">Debt / Threshold (USD)</p>
+                <p className="font-mono text-slate-200">
+                  ${(liqPreview.totalDebtUsd ?? 0).toFixed(2)} / ${(liqPreview.thresholdCollateralUsd ?? 0).toFixed(2)}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">Liquidation bonus</p>
+                <p className="font-mono text-slate-200">{liqPreview.liqBonusBps ?? 0} bps</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">Mode</p>
+                <p className="text-slate-300 text-sm">Owner-only self liquidation and payout</p>
+              </div>
+            </div>
+          </div>
+          </div>
+        )}
+
+        {connected && dashboardDataReady && (
+          <section className="mt-8">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-bold text-white">Liquidation History</h3>
+              <div className="flex gap-2">
+                <button
+                  onClick={fetchTransactionHistory}
+                  disabled={txHistoryLoading || !address}
+                  className="px-4 py-1.5 rounded-lg text-xs font-mono text-slate-400 hover:text-white transition-colors disabled:opacity-40 border border-white/10 bg-slate-900/60"
+                >
+                  {txHistoryLoading ? 'Loading...' : 'REFRESH'}
+                </button>
+              </div>
+            </div>
+
+            {txHistoryError ? (
+              <div className="rounded-2xl p-6 text-sm" style={{ backgroundColor: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                <p className="font-medium text-amber-400">Could not load transaction history</p>
+                <p className="mt-1 text-amber-300/70">{txHistoryError}</p>
+              </div>
+            ) : (
+              <div className="rounded-[32px] overflow-hidden border border-white/10 bg-slate-900/60">
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1100px] text-left border-collapse">
+                    <thead>
+                      <tr className="font-mono text-xs text-slate-400 uppercase tracking-widest" style={{ backgroundColor: 'rgba(255,255,255,0.05)' }}>
+                        <th className="px-8 py-4 font-medium">Type</th>
+                        <th className="px-8 py-4 font-medium min-w-[250px]">Asset</th>
+                        <th className="px-8 py-4 font-medium">Amount</th>
+                        <th className="px-8 py-4 font-medium">Date</th>
+                        <th className="px-8 py-4 font-medium text-left">Transaction</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {txHistoryLoading && liquidationHistory.length === 0 ? (
+                        <tr><td colSpan={5} className="py-8 text-center text-slate-500 text-sm">Loading transactions...</td></tr>
+                      ) : liquidationHistory.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-16 text-center text-slate-500 text-sm">
+                            No liquidation transactions found
+                          </td>
+                        </tr>
+                      ) : (() => {
+                        const pageSize = 10;
+                        const totalPages = Math.max(1, Math.ceil(liquidationHistory.length / pageSize));
+                        const cur = Math.min(txHistoryPage, totalPages);
+                        const start = (cur - 1) * pageSize;
+                        return liquidationHistory.slice(start, start + pageSize).map((row) => (
+                          <tr key={row.id} style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }} className="hover:bg-white/5 transition-colors">
+                            <td className="px-8 py-5 text-slate-300">{txHistoryTypeText(String(row.type))}</td>
+                            <td className="px-8 py-5 text-slate-300 min-w-[250px]">
+                              {(() => {
+                                const typeLower = String(row.type || '').toLowerCase();
+                                const payoutLabel =
+                                  row.asset === 'usdcx'
+                                    ? 'USDCx'
+                                    : row.asset === 'usad' || row.asset === 'usadx'
+                                      ? 'USAD'
+                                      : 'ALEO';
+                                if (typeLower === 'self_liquidate_payout') {
+                                  return (
+                                    <div className="text-sm leading-5 space-y-1">
+                                      <div className="flex items-center gap-2 text-slate-400 whitespace-nowrap">
+                                        <img src="/logos/aleo-dark.svg" alt="ALEO" className="w-5 h-5 rounded-md" />
+                                        <span>Repay: <span className="text-slate-200">ALEO</span></span>
+                                      </div>
+                                      <div className="flex items-center gap-2 text-slate-400 whitespace-nowrap">
+                                        <img
+                                          src={row.asset === 'usdcx' ? '/logos/usdc.svg' : row.asset === 'usad' || row.asset === 'usadx' ? '/logos/usad.svg' : '/logos/aleo-dark.svg'}
+                                          alt={payoutLabel}
+                                          className="w-5 h-5 rounded-md"
+                                        />
+                                        <span>Payout: <span className="text-slate-200">{payoutLabel}</span></span>
+                                      </div>
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <div className="flex items-center gap-3">
+                                    <img
+                                      src={
+                                        row.asset === 'usdcx'
+                                          ? '/logos/usdc.svg'
+                                          : row.asset === 'usad' || row.asset === 'usadx'
+                                            ? '/logos/usad.svg'
+                                            : '/logos/aleo-dark.svg'
+                                      }
+                                      alt={payoutLabel}
+                                      className="w-7 h-7 rounded-lg"
+                                    />
+                                    <span>{payoutLabel}</span>
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                            <td className="px-8 py-5 font-mono text-slate-300">
+                              {(() => {
+                                const typeLower = String(row.type || '').toLowerCase();
+                                const amountText = Number(row.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                if (typeLower === 'self_liquidate_payout') {
+                                  const payoutSym = row.asset === 'usdcx' ? 'USDCx' : row.asset === 'usad' || row.asset === 'usadx' ? 'USAD' : 'ALEO';
+                                  const repayText =
+                                    row.repay_amount != null
+                                      ? `${Number(row.repay_amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ALEO`
+                                      : '--';
+                                  return (
+                                    <div className="space-y-1 text-sm">
+                                      <div className="text-slate-400">Repay: <span className="text-slate-200">{repayText}</span></div>
+                                      <div className="text-slate-400">Payout: <span className="text-slate-200">{amountText} {payoutSym}</span></div>
+                                    </div>
+                                  );
+                                }
+                                return amountText;
+                              })()}
+                            </td>
+                            <td className="px-8 py-5 text-slate-500 text-sm">{new Date(row.created_at).toLocaleString()}</td>
+                            <td className="px-8 py-5 text-slate-300 align-top">
+                              <TxHistoryTrxPills
+                                txId={row.tx_id}
+                                explorerUrl={row.explorer_url ?? null}
+                                vaultExplorerUrl={row.vault_explorer_url ?? null}
+                                type={row.type}
+                                asset={row.asset}
+                                getProvableExplorerTxUrl={getProvableExplorerTxUrl}
+                              />
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+                {(() => {
+                  const pageSize = 10;
+                  const totalPages = Math.max(1, Math.ceil(liquidationHistory.length / pageSize));
+                  if (totalPages <= 1) return null;
+                  return (
+                    <div className="flex items-center justify-between px-6 py-4 border-t border-white/10 text-xs text-slate-400 font-mono">
+                      <span>
+                        Page {Math.min(txHistoryPage, totalPages)} / {totalPages}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={txHistoryPage <= 1}
+                          onClick={() => setTxHistoryPage((p) => Math.max(1, p - 1))}
+                          className="px-3 py-1 rounded-md border border-white/15 disabled:opacity-40"
+                        >
+                          Prev
+                        </button>
+                        <button
+                          type="button"
+                          disabled={txHistoryPage >= totalPages}
+                          onClick={() => setTxHistoryPage((p) => Math.min(totalPages, p + 1))}
+                          className="px-3 py-1 rounded-md border border-white/15 disabled:opacity-40"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+          </section>
         )}
       </div>
     );
@@ -5028,6 +5376,26 @@ const DashboardPage: NextPageWithLayout = () => {
               </section>
             )}
 
+            {healthFactor != null && healthFactor < 1 && (
+              <div
+                className="rounded-2xl p-5 mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
+                style={{ backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.35)' }}
+              >
+                <div>
+                  <p className="text-sm font-semibold text-red-300">Position at liquidation risk</p>
+                  <p className="text-sm text-red-200/90 mt-1">
+                    Health Factor is below 1.0. Repay debt or run self-liquidation to move back to a safe range.
+                  </p>
+                </div>
+                <Link
+                  href="/liquidation"
+                  className="px-4 py-2 rounded-xl text-sm font-mono transition-all border border-red-300/40 text-red-100 hover:bg-red-500/15 inline-flex items-center justify-center shrink-0"
+                >
+                  Open Self-liquidation
+                </Link>
+              </div>
+            )}
+
             {/* Stats row */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
               {[
@@ -5045,27 +5413,6 @@ const DashboardPage: NextPageWithLayout = () => {
                 </div>
               ))}
             </div>
-
-            {healthFactor != null && healthFactor < 1 && (
-              <div
-                className="rounded-2xl p-5 mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
-                style={{ backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.35)' }}
-              >
-                <div>
-                  <p className="text-sm font-semibold text-red-300">Position at liquidation risk</p>
-                  <p className="text-sm text-red-200/90 mt-1">
-                    Health Factor is below 1.0. Repay debt or run self-liquidation to move back to a safe range.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setView('flash')}
-                  className="px-4 py-2 rounded-xl text-sm font-mono transition-all border border-red-300/40 text-red-100 hover:bg-red-500/15"
-                >
-                  Open Self-liquidation
-                </button>
-              </div>
-            )}
 
             {/* Asset management table */}
             <div className="rounded-[32px] overflow-hidden mb-10" style={dashGlass}>
@@ -5409,9 +5756,7 @@ const DashboardPage: NextPageWithLayout = () => {
                       const start = (cur - 1) * pageSize;
                       return txHistory.slice(start, start + pageSize).map((row) => (
                         <tr key={row.id} style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }} className="hover:bg-white/5 transition-colors">
-                          <td className="px-8 py-5 text-slate-300">
-                            {String(row.type).toLowerCase() === 'open_position' ? 'Create position' : row.type}
-                          </td>
+                          <td className="px-8 py-5 text-slate-300">{txHistoryTypeText(String(row.type))}</td>
                           <td className="px-8 py-5 text-slate-300">
                             <div className="flex items-center gap-3">
                               <img

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS transaction_history (
   type TEXT NOT NULL CHECK (type IN ('deposit', 'withdraw', 'borrow', 'repay', 'flash_loan')),
   asset TEXT NOT NULL CHECK (asset IN ('aleo', 'usdcx', 'usad')),
   amount NUMERIC(20, 6) NOT NULL,
+  repay_amount NUMERIC(20, 6),
   program_id TEXT,
   explorer_url TEXT,
   vault_tx_id TEXT,
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS transaction_history (
 ALTER TABLE transaction_history ADD COLUMN IF NOT EXISTS vault_tx_id TEXT;
 ALTER TABLE transaction_history ADD COLUMN IF NOT EXISTS vault_explorer_url TEXT;
 ALTER TABLE transaction_history ADD COLUMN IF NOT EXISTS status TEXT;
+ALTER TABLE transaction_history ADD COLUMN IF NOT EXISTS repay_amount NUMERIC(20, 6);
 COMMENT ON COLUMN transaction_history.status IS 'Optional: vault_pending (withdraw/borrow queued), completed (vault done). UI infers from vault_tx_id when null.';
 
 -- If you already had a narrower asset CHECK, run migrations in supabase/migrations/ (e.g. add_usad_asset.sql).

@@ -60,7 +60,7 @@ export function getPendingVaultTransactions(limit = 20) {
   const q = supabase
     .from('transaction_history')
     .select('wallet_address, tx_id, type, asset, amount, created_at')
-    .in('type', ['withdraw', 'borrow', 'flash_loan'])
+    .in('type', ['withdraw', 'borrow', 'flash_loan', 'self_liquidate_payout'])
     .is('vault_tx_id', null)
     .or('status.is.null,status.eq.vault_pending')
     .order('created_at', { ascending: true })
@@ -114,6 +114,7 @@ export function insertTransactionRecord(payload) {
     type: payload.type,
     asset: payload.asset,
     amount: payload.amount,
+    repay_amount: payload.repay_amount ?? null,
     program_id: payload.program_id ?? null,
     explorer_url: explorerUrl,
     vault_tx_id: null,

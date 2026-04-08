@@ -1464,7 +1464,7 @@ export async function lendingRepay(
 }
 
 /**
- * Self-liquidation: `self_liquidate_debt_credits` (v8 — no third-party liquidation without public positions).
+ * Self close path: `self_liquidate_and_payout` (owner repay + collateral payout accounting).
  */
 export async function lendingSelfLiquidateDebtCredits(
   executeTransaction: ((tx: any) => Promise<any>) | undefined,
@@ -1597,7 +1597,7 @@ export async function lendingSelfLiquidateDebtCredits(
   try {
     const payload = {
       program: poolProgramId,
-      function: 'self_liquidate_debt_credits',
+      function: 'self_liquidate_and_payout',
       repayAmountHuman: repayAmount,
       repayMicro,
       seizeAsset,
@@ -1636,14 +1636,14 @@ export async function lendingSelfLiquidateDebtCredits(
       bonusBps: (bonus ?? LENDING_LIQ_BONUS_DEFAULT_BPS).toString(),
     };
     // eslint-disable-next-line no-console
-    console.log('[self_liquidate_debt_credits] submit payload', safeJsonStringify(payload, 2));
+    console.log('[self_liquidate_and_payout] submit payload', safeJsonStringify(payload, 2));
     // Captured by frontendLogger console interception for export/debug.
   } catch {
     // logging must not block the tx
   }
   const result = await executeTransaction({
     program: poolProgramId,
-    function: 'self_liquidate_debt_credits',
+    function: 'self_liquidate_and_payout',
     inputs,
     fee: DEFAULT_LENDING_FEE * 1_000_000,
     privateFee: false,

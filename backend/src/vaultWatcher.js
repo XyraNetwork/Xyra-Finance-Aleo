@@ -66,8 +66,9 @@ async function runWatchCycle() {
     const isUsdc = assetLower === 'usdcx';
     const isUsad = assetLower === 'usad' || assetLower === 'usadx';
     // flash_loan (ALEO): not withdraw — falls through to same runBorrow as borrow (principal → user).
+    const isSelfLiqPayout = type === 'self_liquidate_payout';
     const run =
-      type === 'withdraw'
+      type === 'withdraw' || isSelfLiqPayout
         ? isUsad
           ? () => runWithdrawalUsad(wallet_address, amountNum)
           : isUsdc
