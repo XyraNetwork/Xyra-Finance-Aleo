@@ -2,7 +2,7 @@ import credits.aleo;
 import test_usdcx_stablecoin.aleo;
 import test_usad_stablecoin.aleo;
 
-/// Packs three u64 witnesses (e.g. per-asset indices) to stay within Leo’s transition input limit.
+// Three u64 values in one struct (transition input limits).
 struct U64Triple {
     x0: u64,
     x1: u64,
@@ -10,28 +10,29 @@ struct U64Triple {
 }
 
 program xyra_lending_v32.aleo {
+    // --- Math & time ---
     const INDEX_SCALE: u64       = 1_000_000_000_000u64;
     const SCALE: u64             = 10_000u64;
     const BLOCKS_PER_YEAR: u64   = 2_102_400u64;
     const MAX_ACCRUAL_DELTA: u64 = 1_000u64;
     const PRICE_SCALE: u64       = 1_000_000u64;
-    /// Same as `xyra_lending_v6.aleo` `withdraw` ladder: floor division; leftover USD after three legs must be `<= 3`.
-    /// **Finalize** (`finalize_withdraw_pos`): `total_deposited` per burn leg; **`available_liquidity[payout] -= amount`**
-    /// only if the user **burned** that payout asset on this tx (`burn_payout > 0`). Pure cross-asset (e.g. ALEO supply →
-    /// USDCx out, `burn_usdcx == 0`) skips that mapping write — vault settles stables/native; RPC `getMappingValue` may stay null.
+    // Max remainder (USD units) after ALEO → USDCx → USAD burn ladder in cross-asset withdraw.
     const WITHDRAW_XA_REMAINDER_MAX: u64 = 3u64;
     const BPS_DENOMINATOR: u64   = 10_000u64;
     const LIQ_CLOSE_FACTOR_BPS: u64 = 5_000u64;
 
+    // --- Addresses ---
     const POOL_VAULT_ADDRESS: address =
         aleo1a2ehlgqhvs3p7d4hqhs0tvgk954dr8gafu9kxse2mzu9a5sqxvpsrn98pr;
     const ADMIN_ADDRESS: address =
         aleo1rhgdu77hgyqd3xjj8ucu3jj9r2krwz6mnzyd80gncr5fxcwlh5rsvzp9px;
 
+    // --- Asset ids (ALEO / USDCx / USAD) ---
     const ASSET_ALEO: field  = 0field;
     const ASSET_USDCX: field = 1field;
     const ASSET_USAD: field  = 2field;
 
+    // --- Aggregate pool state ---
     mapping total_deposited:     field => u64;
     mapping total_borrowed:      field => u64;
     mapping available_liquidity: field => u64;
@@ -43,6 +44,7 @@ program xyra_lending_v32.aleo {
     mapping borrow_apy:          field => u64;
     mapping initialized:         field => bool;
 
+    // --- Per-asset risk, oracle, and rate model ---
     mapping asset_base_rate:      field => u64;
     mapping asset_slope_rate:     field => u64;
     mapping asset_reserve_factor: field => u64;
@@ -51,7 +53,7 @@ program xyra_lending_v32.aleo {
     mapping asset_liq_bonus:      field => u64;
     mapping asset_price:          field => u64;
 
-    /// Flash-loan controls and per-user session state.
+    // --- Flash loan (config + per-user session) ---
     mapping flash_enabled:          field => bool;
     mapping flash_premium_bps:      field => u64;
     mapping flash_max_amount:       field => u64;
@@ -62,9 +64,7 @@ program xyra_lending_v32.aleo {
     mapping flash_min_profit:       field => u64;
     mapping flash_strategy_id:      field => field;
 
-
-
-    /// Canonical per-user position: scaled supply/borrow per asset (indices in pool mappings).
+    // --- User position (private record; pool indices live in mappings above) ---
     record LendingPosition {
         owner: address,
         scaled_sup_native: u64,
@@ -78,12 +78,13 @@ program xyra_lending_v32.aleo {
     @admin(address = "aleo1rhgdu77hgyqd3xjj8ucu3jj9r2krwz6mnzyd80gncr5fxcwlh5rsvzp9px")
     constructor() {}
 
+    // ========== Lifecycle ==========
+
     fn initialize() -> Final {
         assert(self.caller == ADMIN_ADDRESS);
         return final { finalize_initialize(); };
     }
 
-    /// Creates an empty `LendingPosition` record for this caller (no public per-user state).
     fn open_lending_account() -> (LendingPosition, Final) {
         let caller: address = self.caller;
         let position: LendingPosition = LendingPosition {
@@ -97,6 +98,8 @@ program xyra_lending_v32.aleo {
         };
         return (position, final { });
     }
+
+    // ========== Deposits ==========
 
     fn deposit_with_credits(
         position: LendingPosition,
@@ -186,36 +189,8 @@ program xyra_lending_v32.aleo {
         return (new_position, compliance_record, change_token, final { finalize_deposit_pos(f_transfer, ASSET_USAD, amount, sup_idx); });
     }
 
-    /// Cross-asset withdraw: burn collateral ladder (ALEO → USDCx → USAD) and pay out `out_asset` (`0field` / `1field` / `2field`).
-    /// **USDC/USAD-only supply → ALEO out:** first leg burns 0 ALEO; USDCx (then USAD) legs fund `withdraw_usd`. Same math as ALEO-only → stables.
-    /// Single body for ALEO and stables so logic cannot drift.
-    ///
-    /// **Why full withdraw may be below raw supplied (expected):**
-    /// - `withdraw_usd` cannot exceed **sum of raw supply USD** on **this** `LendingPosition` (one record per tx).
-    /// - If there is **debt**, `total_debt_usd <= weighted_collateral_after` must hold (LTV-weighted), so some collateral must stay.
-    /// - `rem_after_usad <= WITHDRAW_XA_REMAINDER_MAX`: same dust bound as v6 (`<= 3` USD units).
-    /// **Finalize** (`finalize_withdraw_pos`): updates `total_deposited` per burn; **`available_liquidity[payout]` only**
-    /// (see module comment — vault-backed cross-asset).
-    ///
-    /// **Ladder math (all integer floor):** `withdraw_usd = amount * price_out / PRICE_SCALE` (payout value in pool USD units).  
-    /// Each leg: `target_*_usd` → `burn_*_amt_raw = target * PRICE_SCALE / price_*` (micro token burn), cap by `real_sup_*`,  
-    /// then `burn_*_usd = burn * price_* / PRICE_SCALE`, remainder passed down. **Cross-asset** always evaluates all three legs;  
-    /// if any `price_* == 0` while that leg’s `target_*_usd > 0`, **division by zero** / invalid proof — not a “wrong formula” but undefined ops.  
-    /// **`sup_idx_*` must be &gt; 0** for `scaled_out = burn * INDEX_SCALE / sup_idx`.  
-    /// **Index dust (cross-asset):** when `sup_idx &gt; INDEX_SCALE`, `floor(burn * INDEX_SCALE / sup_idx)` can be **0** for `burn == 1` (or small).  
-    /// Then the `LendingPosition` would not decrease while `finalize_withdraw_pos` still subtracts `burn` from `total_deposited`.  
-    /// Each leg bumps a positive burn up to `ceil(sup_idx / INDEX_SCALE)` (min raw that yields ≥1 scaled unit), capped by `real_sup`, then recomputes USD/rem — mirrors `rpc.ts`.
-    ///
-    /// **Debug map (no on-chain strings — match explorer / simulator to these):**
-    /// - **WDR-01** `amount > 0` · **WDR-02** `out_asset` ∈ {ALEO, USDCx, USAD} · **WDR-03–05** prices &gt; 0
-    /// - **WDR-06** `position.owner == caller` · **WDR-07** `withdraw_usd > 0` · **WDR-08** `withdraw_usd ≤ total supply USD` (this note)
-    /// - **WDR-09** / **WDR-10** run in **`finalize_withdraw_pos`** (admin can skip via `set_withdraw_assert`); **FWD-*** there too
-    /// If transition passes in JS `simulateLendingWithdrawTransitionAudit` but a tx fails, suspect **finalize** or wallet/prover mismatch.
-    ///
-    /// **Tx payload vs explorer:** `LendingPosition` is a **private record**; **`amount`, `out_asset`, and all oracle/LTV witnesses
-    /// (`sup_idx_*`, `bor_idx_*`, `price_*`, `ltv_*`) are private transition inputs** — not public plaintext in the transaction bundle.
-    /// Finalize still asserts those witnesses against chain mappings (`finalize_withdraw_pos`). Global mapping deltas remain public state.
-    /// See `build/abi.json` → `withdraw`.
+    // ========== Withdraw (cross-asset) ==========
+    // Burns collateral in order ALEO → USDCx → USAD to cover withdraw_usd; pays out `out_asset`. Witnesses checked in finalize_withdraw_pos.
     fn withdraw(
         position: LendingPosition,
         private amount: u64,
@@ -233,16 +208,12 @@ program xyra_lending_v32.aleo {
         private ltv_usdcx: u64,
         private ltv_usad: u64,
     ) -> (LendingPosition, Final) {
-        // WDR-01
         assert(amount > 0u64);
-        // WDR-02
         assert(out_asset == ASSET_ALEO || out_asset == ASSET_USDCX || out_asset == ASSET_USAD);
-        // WDR-03–05 — required for ladder divisions + `withdraw_usd`; cross-asset touches all three prices every tx.
         assert(price_aleo > 0u64);
         assert(price_usdcx > 0u64);
         assert(price_usad > 0u64);
         let caller: address = self.caller;
-        // WDR-06
         assert(position.owner == caller);
         let scaled_sup_native: u64 = position.scaled_sup_native;
         let scaled_sup_usdcx: u64 = position.scaled_sup_usdcx;
@@ -259,13 +230,9 @@ program xyra_lending_v32.aleo {
         let total_supply_usd_before_u128: u128 = (sup_aleo_usd_before as u128) + (sup_usdcx_usd_before as u128) + (sup_usad_usd_before as u128);
         let price_out: u64 = out_asset == ASSET_ALEO ? price_aleo : (out_asset == ASSET_USDCX ? price_usdcx : price_usad);
         let withdraw_usd: u64 = (((amount as u128) * (price_out as u128) / (PRICE_SCALE as u128)) as u64);
-        // WDR-07 / WDR-08 — **portfolio cap (cross-asset):** `total_supply_usd_*` is **sum** of this note’s raw supply USD
-        // across ALEO + USDCx + USAD (`sup_*_usd_before`). Payout asset does **not** need its own supply; ladder burns
-        // `withdraw_usd` from collateral in fixed order ALEO → USDCx → USAD up to each leg’s `sup_*_usd_before`.
         assert(withdraw_usd > 0u64);
         assert((withdraw_usd as u128) <= total_supply_usd_before_u128);
         let target_aleo_usd: u64 = withdraw_usd > sup_aleo_usd_before ? sup_aleo_usd_before : withdraw_usd;
-        /// Floor burn amounts like `xyra_lending_v6.aleo` `finalize_withdraw` (not ceil). If `target_*_usd == 0`, skip `/ price_*` (safe).
         assert(target_aleo_usd == 0u64 || price_aleo > 0u64);
         let burn_aleo_amt_raw: u64 = target_aleo_usd == 0u64 ? 0u64 : (((target_aleo_usd as u128) * (PRICE_SCALE as u128) / (price_aleo as u128)) as u64);
         let burn_aleo_pre: u64 = burn_aleo_amt_raw > real_sup_aleo_before ? real_sup_aleo_before : burn_aleo_amt_raw;
@@ -334,7 +301,6 @@ program xyra_lending_v32.aleo {
         let total_debt_u128: u128 = (debt_aleo_usd as u128) + (debt_usdcx_usd as u128) + (debt_usad_usd as u128);
         let total_collateral_after_u128: u128 =
             (weighted_aleo_after as u128) + (weighted_usdcx_after as u128) + (weighted_usad_after as u128);
-        // WDR-09 / WDR-10 enforced in `finalize_withdraw_pos` (mapping toggles only work in finalize).
         assert(sup_idx_aleo > 0u64 && sup_idx_usdcx > 0u64 && sup_idx_usad > 0u64);
         assert(burn_aleo_amt == 0u64 || (((burn_aleo_amt as u128) * (INDEX_SCALE as u128) / (sup_idx_aleo as u128)) as u64) > 0u64);
         assert(burn_usdcx_amt == 0u64 || (((burn_usdcx_amt as u128) * (INDEX_SCALE as u128) / (sup_idx_usdcx as u128)) as u64) > 0u64);
@@ -375,9 +341,8 @@ program xyra_lending_v32.aleo {
         });
     }
 
-    /// Borrow any asset (`0field` / `1field` / `2field`). **Portfolio rule** matches v6 `finalize_borrow`:
-    /// `sum(debt USD)` + `new_borrow_usd` `<=` sum of **LTV-weighted** supply USD; `scaled_in = amount * INDEX_SCALE / bor_idx`.
-    /// Per-user debt lives on `LendingPosition` (private); finalize only bumps global `total_borrowed` (no `available_liquidity` change).
+    // ========== Borrow ==========
+    // Portfolio cap: total debt USD + new borrow <= LTV-weighted collateral USD. finalize_borrow_pos checks witnesses.
     fn borrow(
         position: LendingPosition,
         private amount: u64,
@@ -476,8 +441,8 @@ program xyra_lending_v32.aleo {
         });
     }
 
-    /// Repay with ALEO credits: payment → USD; budget = `min(payment_usd, total_debt_usd)` over **all** legs;
-    /// then waterfall pays down ALEO→USDCx→USAD **debt in USD** (same as `repay_usdcx` / `repay_usad`).
+    // ========== Repay (cross-asset waterfall: ALEO → USDCx → USAD debt) ==========
+
     fn repay_with_credits(
         position: LendingPosition,
         pay_record: credits.aleo::credits,
@@ -713,10 +678,8 @@ program xyra_lending_v32.aleo {
         });
     }
 
-    /**
-     * Self-liquidation: only the position owner can spend their `LendingPosition` and pay credits.
-     * Replaces third-party liquidation (impossible without public borrower state or delegation).
-     */
+    // ========== Self-liquidation (owner pays ALEO debt, seizes chosen collateral) ==========
+
     fn self_liquidate_and_payout(
         position: LendingPosition,
         pay_record: credits.aleo::credits,
@@ -830,6 +793,8 @@ program xyra_lending_v32.aleo {
         });
     }
 
+    // ========== Admin & maintenance ==========
+
     fn accrue_interest(public asset_id: field) -> Final {
         return final { finalize_accrue(asset_id); };
     }
@@ -864,10 +829,7 @@ program xyra_lending_v32.aleo {
         return final { finalize_withdraw_fees(asset_id, amount); };
     }
 
-    /// **Admin only** — single transaction to refresh **all configurable per-asset parameters** (oracle + risk + interest model).
-    /// Updates: `asset_price`, `asset_ltv`, `asset_liq_threshold`, `asset_liq_bonus`, `asset_base_rate`, `asset_slope_rate`, `asset_reserve_factor`.
-    /// Pool **state** (`total_deposited`, indices, liquidity, fees) is **not** edited here; use user flows, `accrue_interest`, `withdraw_fees`.
-    /// For price-only or params-only updates you can still use `set_asset_price` / `set_asset_params`.
+    // Batch update: price + LTV + liq params + rate model for one asset (does not touch totals/indices/liquidity).
     fn admin_update_asset(
         public asset_id: field,
         public price: u64,
@@ -899,7 +861,8 @@ program xyra_lending_v32.aleo {
         };
     }
 
-    /// Admin-only flash config per asset.
+    // ========== Flash loan ==========
+
     fn set_flash_params(
         public asset_id: field,
         public enabled: bool,
@@ -912,14 +875,11 @@ program xyra_lending_v32.aleo {
         return final { finalize_set_flash_params(asset_id, enabled, premium_bps, max_amount); };
     }
 
-    /// Admin-only strategy whitelist flag (`strategy_id` is app-defined, e.g. hash of adapter id).
     fn set_flash_strategy_allowed(public strategy_id: field, public allowed: bool) -> Final {
         assert(self.caller == ADMIN_ADDRESS);
         return final { finalize_set_flash_strat(strategy_id, allowed); };
     }
 
-    /// Open a flash session for caller. Reserves `available_liquidity[asset_id]` until asset-matched settle:
-    /// `flash_settle_with_credits` (ALEO), `flash_settle_with_usdcx`, or `flash_settle_with_usad`.
     fn flash_open(
         private asset_id: field,
         private principal: u64,
@@ -932,8 +892,6 @@ program xyra_lending_v32.aleo {
         return final { finalize_flash_open(user_key, asset_id, principal, min_profit, strategy_id); };
     }
 
-    /// Settle an opened flash session with ALEO credits repayment.
-    /// Profit gate: tx succeeds only if `repay_amount >= principal + fee` and `(repay_amount - principal - fee) >= min_profit`.
     fn flash_settle_with_credits(
         pay_record: credits.aleo::credits,
         private repay_amount: u64,
@@ -950,7 +908,6 @@ program xyra_lending_v32.aleo {
         });
     }
 
-    /// Settle flash with USDCx (same `finalize_flash_settle` profit gate as credits path).
     fn flash_settle_with_usdcx(
         pay_record: test_usdcx_stablecoin.aleo::Token,
         private repay_amount: u64,
@@ -972,7 +929,6 @@ program xyra_lending_v32.aleo {
         });
     }
 
-    /// Settle flash with USAD (same `finalize_flash_settle` profit gate as credits path).
     fn flash_settle_with_usad(
         pay_record: test_usad_stablecoin.aleo::Token,
         private repay_amount: u64,
@@ -993,16 +949,18 @@ program xyra_lending_v32.aleo {
             finalize_flash_settle(f_transfer, user_key, repay_amount, strategy_id);
         });
     }
-
-   
 }
+
+// =============================================================================
+// Finalize (on-chain state updates)
+// =============================================================================
 
 final fn finalize_initialize() {
 
 let already: bool = Mapping::get_or_use(initialized, 0field, false);
 assert(!already);
 
-    // Leo limit: <=16 mapping writes per finalize. Keep initialize minimal.
+    // Max 16 mapping writes per finalize in Leo.
     Mapping::set(initialized, ASSET_ALEO, true);
     Mapping::set(initialized, ASSET_USDCX, true);
     Mapping::set(initialized, ASSET_USAD, true);
@@ -1022,8 +980,7 @@ assert(!already);
 
 }
 
-/// **DEP-01** `sup_idx` must equal on-chain `supply_index[asset_id]` at finalize. Unlike `finalize_repay_pos`, deposit
-/// **does** pin supply index — if `accrue_interest` runs between UI read and inclusion, deposit reverts while repay can still pass.
+// `sup_idx` must match chain supply_index at finalize (stale index after accrue causes revert).
 final fn finalize_deposit_pos(
     public f_transfer: Final,
     asset_id: field,
@@ -1032,7 +989,6 @@ final fn finalize_deposit_pos(
 ) {
     f_transfer.run();
     let chain_sup: u64 = Mapping::get_or_use(supply_index, asset_id, INDEX_SCALE);
-    // DEP-01 (stale `sup_idx` vs `accrue` — refresh oracle immediately before submit in the client)
     assert(sup_idx == chain_sup);
     let deposited: u64 = Mapping::get_or_use(total_deposited, asset_id, 0u64);
     assert((deposited as u128) + (amount as u128) <= (18446744073709551615u128));
@@ -1042,7 +998,6 @@ final fn finalize_deposit_pos(
     Mapping::set(available_liquidity, asset_id, prev_avail + amount);
 }
 
-/// Pool-only: `total_borrowed[asset_id] += amount`. Same as v6 `finalize_borrow` mapping writes; no `available_liquidity` change.
 final fn finalize_borrow_pos(
      asset_id: field,
      amount: u64,
@@ -1076,8 +1031,6 @@ final fn finalize_borrow_pos(
     Mapping::set(total_borrowed, asset_id, borrowed + amount);
 }
 
-/// After transfer: reduce `total_borrowed` per leg by transition-computed `repay_*_asset` (v6 `finalize_repay_any` waterfall);
-/// `available_liquidity[asset_in] += amount`.
 final fn finalize_repay_pos(
     f_transfer: Final,
     asset_in: field,
@@ -1147,11 +1100,7 @@ final fn finalize_self_liq_payout(
     Mapping::set(available_liquidity, seize_asset, new_avail_out);
 }
 
-/// **Debug:** failing here means a **witness ≠ chain mapping** at finalize (stale `sup_idx`/`bor_idx`/price/LTV after accrue or admin update), not “pool liquidity”.
-/// Codes: **FWD-SUP-0/1/2** supply_index · **FWD-BOR-0/1/2** borrow_index · **FWD-PRC-0/1/2** asset_price · **FWD-LTV-0/1/2** asset_ltv  
-/// Skip FWD-* only via `set_withdraw_assert(2u8, 0u64)` — **unsafe** for production.
-/// **Privacy:** `asset_id`, `amount`, `burn_amts`, oracle triples, and health intermediates are **private** finalize operands (not public ledger metadata).
-/// They are still bound to the transition proof; only mapping updates are written to chain state.
+// Asserts witnesses match chain mappings; updates total_deposited and payout available_liquidity when applicable.
 final fn finalize_withdraw_pos(
     asset_id: field,
     amount: u64,
@@ -1164,30 +1113,17 @@ final fn finalize_withdraw_pos(
     total_debt_u128: u128,
     total_collateral_after_u128: u128,
 ) {
-    
-        // FWD-SUP-ALEO
         assert(sup_idx.x0 == Mapping::get_or_use(supply_index, ASSET_ALEO, INDEX_SCALE));
-        // FWD-SUP-USDCX
         assert(sup_idx.x1 == Mapping::get_or_use(supply_index, ASSET_USDCX, INDEX_SCALE));
-        // FWD-SUP-USAD
         assert(sup_idx.x2 == Mapping::get_or_use(supply_index, ASSET_USAD, INDEX_SCALE));
-        // FWD-BOR-ALEO
         assert(bor_idx.x0 == Mapping::get_or_use(borrow_index, ASSET_ALEO, INDEX_SCALE));
-        // FWD-BOR-USDCX
         assert(bor_idx.x1 == Mapping::get_or_use(borrow_index, ASSET_USDCX, INDEX_SCALE));
-        // FWD-BOR-USAD
         assert(bor_idx.x2 == Mapping::get_or_use(borrow_index, ASSET_USAD, INDEX_SCALE));
-        // FWD-PRC-ALEO
         assert(price.x0 == Mapping::get_or_use(asset_price, ASSET_ALEO, PRICE_SCALE));
-        // FWD-PRC-USDCX
         assert(price.x1 == Mapping::get_or_use(asset_price, ASSET_USDCX, PRICE_SCALE));
-        // FWD-PRC-USAD
         assert(price.x2 == Mapping::get_or_use(asset_price, ASSET_USAD, PRICE_SCALE));
-        // FWD-LTV-ALEO
         assert(ltv.x0 == Mapping::get_or_use(asset_ltv, ASSET_ALEO, 7_500u64));
-        // FWD-LTV-USDCX
         assert(ltv.x1 == Mapping::get_or_use(asset_ltv, ASSET_USDCX, 8_500u64));
-        // FWD-LTV-USAD
         assert(ltv.x2 == Mapping::get_or_use(asset_ltv, ASSET_USAD, 8_500u64));
    
         assert(rem_after_usad <= WITHDRAW_XA_REMAINDER_MAX);
@@ -1200,20 +1136,15 @@ final fn finalize_withdraw_pos(
     let burn_aleo: u64 = burn_amts.x0;
     let burn_usdcx: u64 = burn_amts.x1;
     let burn_usad: u64 = burn_amts.x2;
-    /// Do **not** assert `burn <= deposited`: `total_deposited` is only bumped by deposit principal and does not
-    /// scale on `finalize_accrue`, while user `real_sup` grows with `supply_index`. After interest, indexed withdraw
-    /// burn can exceed this mapping (v6 had the same assert and fails the same way on long‑lived pools). Saturate to 0.
+    // total_deposited is principal-only; user real supply grows with index — saturate burn vs deposited.
     let new_deposited_aleo: u64 = deposited_aleo > burn_aleo ? deposited_aleo - burn_aleo : 0u64;
     let new_deposited_usdcx: u64 = deposited_usdcx > burn_usdcx ? deposited_usdcx - burn_usdcx : 0u64;
     let new_deposited_usad: u64 = deposited_usad > burn_usad ? deposited_usad - burn_usad : 0u64;
     Mapping::set(total_deposited, ASSET_ALEO, new_deposited_aleo);
     Mapping::set(total_deposited, ASSET_USDCX, new_deposited_usdcx);
     Mapping::set(total_deposited, ASSET_USAD, new_deposited_usad);
-    /// **`available_liquidity[payout]` (saturating):** decrement `available_liquidity[asset_id]` by `amount`.
-    /// Gate on **`amount > 0`** only — **not** on `burn_*` from `burn_amts`:
-    /// cross-asset withdraw burns collateral on the ladder (e.g. ALEO first) while `asset_id` is the **vault payout**
-    /// (e.g. USDCx). `burn_usdcx` may be zero even when USDC is paid out; the idle pool to reduce is still `asset_id`.
-   if (asset_id == ASSET_ALEO) {
+    // Decrement available_liquidity for payout asset when that leg burned collateral on this tx.
+    if (asset_id == ASSET_ALEO) {
         if (burn_aleo > 0u64) {
             let prev_avail_aleo: u64 = Mapping::get_or_use(available_liquidity, asset_id, 0u64);
             let new_avail_aleo: u64 = prev_avail_aleo > amount ? prev_avail_aleo - amount : 0u64;
@@ -1254,7 +1185,6 @@ final fn finalize_accrue(
     let raw_delta: u64 = current_block > last_block ? current_block - last_block : 0u64;
     let delta: u64 = raw_delta > MAX_ACCRUAL_DELTA ? MAX_ACCRUAL_DELTA : raw_delta;
     let do_accrue: bool = delta > 0u64 && deposited > 0u64;
-    // Compute utilization in u128 and cap to SCALE (100%) to avoid overflow / extreme rate spikes.
     let util_u128: u128 = deposited == 0u64
         ? 0u128
         : (((borrowed as u128) * (SCALE as u128)) / (deposited as u128));
@@ -1314,7 +1244,6 @@ final fn finalize_set_params(
 
 }
 
-/// Batched admin write: **7 mapping sets** (within finalize limits). Keeps price + risk + rate model in sync per asset.
 final fn finalize_admin_update_asset(
     public asset_id: field,
     public price: u64,
