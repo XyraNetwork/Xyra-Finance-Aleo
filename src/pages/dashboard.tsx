@@ -5164,7 +5164,13 @@ const DashboardPage: NextPageWithLayout = () => {
     const enteredRepay = Number(liqRepayAmountInput);
     const enteredRepayDisplay = Number.isFinite(enteredRepay) && enteredRepay > 0 ? enteredRepay : 0;
     const effectiveMaxRepay = liqUiLimits?.ok ? liqUiLimits.effectiveMaxRepayAleo : 0;
-    const canSelfLiquidateNow = !!(liqPreview.ok && liqPreview.liquidatable);
+    // Match dashboard HF: ∞ means no meaningful debt — same as HF ≥ 1, hide execute until HF < 1.
+    const canSelfLiquidateNow = !!(
+      liqPreview.ok &&
+      liqPreview.liquidatable &&
+      healthFactor != null &&
+      healthFactor < 1
+    );
     const liquidationHistory = txHistory.filter((row) => {
       const t = String(row.type || '').toLowerCase();
       return t === 'liquidation' || t === 'self_liquidate_payout';
@@ -5366,10 +5372,30 @@ const DashboardPage: NextPageWithLayout = () => {
               </div>
             ) : (
               <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/[0.06] p-4">
-                <p className="text-sm font-medium text-emerald-200">Your position is healthy</p>
-                <p className="text-xs text-emerald-100/80 mt-1">
-                  Self liquidation unlocks only if Health Factor drops below 1.0. Right now no action is needed.
-                </p>
+                {healthFactor == null ? (
+                  <>
+                    <p className="text-sm font-medium text-emerald-200">No self-liquidation needed</p>
+                    <p className="text-xs text-emerald-100/80 mt-1">
+                      Health Factor shows ∞ when there is no meaningful borrow. The repayment form and Execute button
+                      only appear when Health Factor is below 1 (liquidation zone).
+                    </p>
+                  </>
+                ) : healthFactor >= 1 ? (
+                  <>
+                    <p className="text-sm font-medium text-emerald-200">Your position is healthy</p>
+                    <p className="text-xs text-emerald-100/80 mt-1">
+                      Self liquidation unlocks only if Health Factor drops below 1.0. Right now no action is needed.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm font-medium text-amber-200/95">Liquidation preview unavailable</p>
+                    <p className="text-xs text-amber-100/75 mt-1">
+                      {liqPreview.reason ||
+                        'Health Factor is below 1 but we could not confirm a liquidatable preview. Try refreshing or check pool data.'}
+                    </p>
+                  </>
+                )}
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Link
                     href="/dashboard"

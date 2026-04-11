@@ -10,7 +10,7 @@ Xyra Finance is a **privacy-first lending and borrowing protocol** on Aleo—ins
 
 - **Problem:** Public DeFi lending exposes balances and strategies, attracts MEV and liquidation sniping, and is unsuitable for institutions and regulated entities.
 - **Solution:** Lending pools on Aleo where **deposits, borrows, repayments, withdrawals, and interest** are enforced on-chain, **user positions stay private** (Aleo records), and pool-level metrics (TVL, utilization, APY) stay queryable via RPC.
-- **Current status:** **Native ALEO lending** (deposit, borrow, repay, withdraw, interest accrual) implemented in the main Leo program, with a **Node/Express vault backend** that releases **Aleo credits** to users after on-chain finalization. The **Next.js** dApp provides a landing page, **Dashboard**, **Markets**, **Docs**, optional **Admin**, and **transaction history** (Supabase) with Provable wallet (Shield) integration. Optional env wiring can point the UI at additional program IDs for future markets—the canonical on-chain lending logic for this repo lives under **`program/`** (ALEO-denominated, not USD-native programs).
+- **Current status:** **Native ALEO lending** (deposit, borrow, repay, withdraw, interest accrual) implemented in the main Leo program, with a **Node/Express vault backend** that releases **Aleo credits** (and related asset payouts) after on-chain finalization. The **Next.js** dApp provides a landing page, **Dashboard** (portfolio, **Liquidation**, **Flash loan** views), **Markets**, **Docs**, **`/admin`** operator console (when configured), and **transaction history** plus **flash session** tracking (Supabase) with Provable wallet (Shield) integration. **User-facing positions and caps** are read from **on-chain mappings** in line with finalize logic—so the UI matches pool state rather than relying on a looser record-only interpretation. Optional env wiring can point the UI at additional program IDs for extra market rows—the canonical on-chain lending logic lives under **`program/`**.
 
 ---
 
@@ -18,10 +18,10 @@ Xyra Finance is a **privacy-first lending and borrowing protocol** on Aleo—ins
 
 | Path | Description |
 |------|-------------|
-| **`/`** | Next.js 15 frontend: landing, dashboard, markets, docs, wallet, RPC helpers (`src/components/aleo/rpc.ts`) |
+| **`/`** | Next.js 15 frontend: landing, dashboard (incl. liquidation & flash tabs), `/liquidation` & `/flash` short links → dashboard, `/admin`, markets, docs, wallet, RPC helpers (`src/components/aleo/rpc.ts`) |
 | **`program/`** | Leo program: ALEO lending pool (`src/main.leo`), lending math tests |
 | **`backend/`** | Express server: vault transfers, optional vault watcher, CORS, Supabase updates |
-| **`supabase/`** | SQL schema for `transaction_history` (wallet, tx, asset, vault links) |
+| **`supabase/`** | SQL for `transaction_history`, `flash_sessions`, and related migrations |
 | **`docs/`** | Submission notes, wave ideas; **`backend/docs/CONCURRENCY.md`** for vault queue |
 
 Program IDs are configured via **`NEXT_PUBLIC_*`** env vars (see below), not hardcoded to a single deployment name.
@@ -33,7 +33,8 @@ Program IDs are configured via **`NEXT_PUBLIC_*`** env vars (see below), not har
 ### Leo programs (`program/`)
 
 - **Money-market core:** deposit, borrow, repay, withdraw, accrue interest, utilization-based borrow/supply dynamics—implemented in **`program/src/main.leo`** as **multiple reserves** (ALEO credits, USDCx, USAD) in one program with cross-collateral health checks.
-- **Public pool state:** totals, indices, utilization; on-chain mappings for caps and parameters where deployed.
+- **Self-liquidation and flash:** on-chain transitions for **self-liquidation** (debt repayment and collateral release under protocol rules) and **flash loans** (open / settle per asset, premiums, caps, strategy allowlist)—surfaced in the dashboard and admin UI.
+- **Public pool state:** totals, indices, utilization; on-chain mappings for caps, user position aggregates, and parameters—the app reads these mappings for **consistent position and cap display** alongside private records.
 - **Private user activity:** shielded records for user flows on Aleo.
 - **Lending math tests:** `program/lending_math_tests` with offline **`leo test`** for rate/index math.
 
@@ -41,22 +42,28 @@ Program IDs are configured via **`NEXT_PUBLIC_*`** env vars (see below), not har
 
 - **Landing (`/`):** Hero, product narrative, CTA into the app.
 - **Dashboard (`/dashboard`):** Portfolio summary (collateral, borrowable, debt, health factor), **per-asset rows** for configured markets with wallet balance, supplied/borrowed amounts, **Supply/Borrow APY** under position columns, expandable **Manage** (Supply / Withdraw / Borrow / Repay) with amount validation, previews, and transaction flow (empty state + wallet connect when disconnected).
+- **Positions vs on-chain truth:** Portfolio, caps, and effective position math are driven from **program mappings** (and related RPC reads) so they stay aligned with how the pool finalizes state—replacing an older path that leaned more heavily on raw records without the same mapping-level consistency.
+- **Liquidation (`/liquidation` → `?view=liquidation`):** Dedicated flow for **self-liquidation**: liquidatable state, on-chain-aligned **preview** before signing (`getLiquidationPreviewAleo` / UI limits), repay-and-reclaim under program rules, and history rows typed as self-liquidation / vault payout where applicable.
+- **Flash loans (`/flash` → `?view=flash`):** **Open session** on-chain (`flash_open`), **vault-funded** principal via backend (`POST /flash/fund-session`), **settle** in one transaction per asset path (credits / USDCx / USAD), fee preview, optional strategy id, and **session list** (Supabase-backed) with active vs terminal statuses.
+- **Admin (`/admin`):** Operator console gated by **`NEXT_PUBLIC_LENDING_ADMIN_ADDRESS`** (see `src/components/AdminView.tsx`): pool initialization, oracle refresh, interest accrual, risk and rate parameters, flash policy (params / allowed strategies), fee withdrawal when permitted—other wallets see an access-only message.
 - **Markets (`/markets`):** Pool-facing metrics, APY, vault hints where relevant, **live network status** (latest block height and RPC endpoint via Aleo JSON-RPC).
-- **Docs (`/docs`):** In-app documentation.
+- **Docs (`/docs`):** In-app documentation (including liquidation, flash, and admin sections).
 - **Wallet:** Provable **Shield** adapter, modal-based connect, session persistence (`WalletPersistence`).
-- **Transaction history:** Paginated history; Supabase-backed; explorer links and optional vault transfer metadata.
+- **Transaction history:** Paginated history; Supabase-backed; explorer links and optional vault transfer metadata (including **flash_loan** and **self_liquidate_payout** types where used).
 - **UX polish:** Full-page loading states on the dashboard, larger “processing transaction” overlay during submits, consistent pointer affordances (`src/assets/css/globals.css`), Tailwind CSS v4 + DaisyUI.
 
 ### Backend (Express, ESM)
 
-- **Vault endpoints** that pay out **Aleo credits** after finalized on-chain steps (see `backend/src/server.js` and processors); behavior can extend per deployment.
+- **Vault endpoints** that pay out **Aleo credits** (and other configured assets) after finalized on-chain steps—**borrow**, **withdraw**, and **flash fund** flows share consistent payout helpers where applicable (see `backend/src/server.js` and processors).
+- **Flash:** Session funding and watcher paths integrate with the vault queue; see **`POST /flash/fund-session`** and flash session APIs used by the dashboard.
 - **Queue:** Serialized vault work with configurable concurrency; see **`backend/docs/CONCURRENCY.md`**.
 - **Optional:** Vault watcher, price hooks (`backend/.env.example`).
 - **CORS:** `CORS_ORIGIN` for split frontend/backend deploys.
 
 ### Data (Supabase)
 
-- **`transaction_history`:** wallet, tx id, type, asset tag, amounts, explorer URLs, optional `vault_tx_id` / `vault_explorer_url`. Client reads use the publishable key; inserts/updates that need elevated trust go through the backend with the service role.
+- **`transaction_history`:** wallet, tx id, type (`deposit`, `withdraw`, `borrow`, `repay`, `flash_loan`, `self_liquidate_payout`, …), asset tag, amounts, explorer URLs, optional `vault_tx_id` / `vault_explorer_url`. Client reads use the publishable key; inserts/updates that need elevated trust go through the backend with the service role.
+- **`flash_sessions`:** Tracks flash open / vault fund / settle linkage, status, and timestamps for dashboard history and recovery flows—see **`supabase/FLASH_SESSIONS_SCHEMA.sql`** and migrations under **`supabase/migrations/`**.
 
 ---
 
@@ -113,7 +120,7 @@ npm run test:lending-math
 
 ### 4. Supabase
 
-- Run **`supabase/schema.sql`** in the SQL Editor.
+- Run **`supabase/schema.sql`** in the SQL Editor, then apply **`supabase/FLASH_SESSIONS_SCHEMA.sql`** and any **`supabase/migrations/*.sql`** your deployment expects (flash history and newer columns).
 - Frontend: Project URL + **publishable** key.
 - Backend: **service role** key for updates that the browser must not perform alone.
 
@@ -133,7 +140,8 @@ npm run test:lending-math
 | `NEXT_PUBLIC_USAD_LENDING_POOL_PROGRAM_ID` | Optional | Same pattern for another market slot; omit if unused |
 | `RECORD_TRANSACTION_SECRET` | Recommended (prod) | Shared secret for server routes that call backend `/record-transaction` |
 | `NEXT_PUBLIC_VAULT_ADDRESS` | Optional | Shown in Markets / explorer links |
-| `NEXT_PUBLIC_ADMIN_ADDRESS` | Optional | Admin tab / privileged UI when set |
+| `NEXT_PUBLIC_LENDING_ADMIN_ADDRESS` | Optional | **Required for `/admin`:** only this wallet sees the operator console (falls back to `ADMIN_ADDRESS` in `src/types` if set in code) |
+| `NEXT_PUBLIC_ADMIN_ADDRESS` | Optional | Legacy / secondary admin hint in types; prefer **`NEXT_PUBLIC_LENDING_ADMIN_ADDRESS`** for the admin page |
 | `NEXT_PUBLIC_APP_ENV` | Optional | e.g. `prod` |
 
 See **`.env.example`** for the full list and comments.
@@ -168,10 +176,9 @@ Vault work runs through an **in-process queue** (default concurrency **1**) to p
 
 ## Roadmap
 
-- **Now:** Testnet lending loop end-to-end, vault-backed credit payouts, dashboard + markets + history, docs, Shield wallet flows.
-- **Product direction:** **Multi-asset, cross-collateral, Aave-style** lending—unified program with per-reserve pools (ALEO, USDCx, USAD), utilization-based borrow/supply rates (linear base + slope, reserve factor), and index accrual; strongest foundation for a serious money market on Aleo.
-- **Explore:** **Flash loan** support (design and safety constraints TBD).
-- **Later:** Liquidations, governance, richer oracles, more assets and pool types—see notes under **`docs/`**.
+- **Shipped in this repo:** Testnet lending loop end-to-end, **mapping-aligned** portfolio and caps, vault-backed payouts, **self-liquidation** UX, **multi-asset flash loans** with vault funding and Supabase session tracking, **`/admin`** operator tools, dashboard + markets + history + docs, Shield wallet flows.
+- **Product direction:** Harden **multi-asset, cross-collateral** money-market behavior (ALEO, USDCx, USAD), utilization-based rates, and index accrual on Aleo; keep UI and off-chain services strictly aligned with on-chain finalization.
+- **Next:** Third-party **liquidator** marketplace (beyond self-liquidation), stronger **oracles**, **governance**, more assets / pool types, mainnet readiness—see notes under **`docs/`** and in-app **`/docs`** changelog.
 
 ---
 
