@@ -227,13 +227,22 @@ const HeroSection = ({ onEnterApp }: { onEnterApp: () => void }) => (
             <FeatherIcon name="arrow-up-right" style={{ width: 16, height: 16 }} />
           </span>
         </button>
-        <a
-          href="/docs"
-          className="text-sm flex items-center gap-2 transition-colors"
-          style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#64748b' }}
-        >
-          <FeatherIcon name="book-open" style={{ width: 16, height: 16 }} /> Read Documentation
-        </a>
+        <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-6">
+          <a
+            href="/docs"
+            className="text-sm flex items-center gap-2 transition-colors hover:text-slate-400"
+            style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#64748b' }}
+          >
+            <FeatherIcon name="book-open" style={{ width: 16, height: 16 }} /> Read Documentation
+          </a>
+          <a
+            href="/whitepaper"
+            className="text-sm flex items-center gap-2 transition-colors hover:text-slate-400"
+            style={{ fontFamily: "'IBM Plex Mono', monospace", color: '#64748b' }}
+          >
+            <FeatherIcon name="book-open" style={{ width: 16, height: 16 }} /> Technical Whitepaper
+          </a>
+        </div>
       </div>
     </div>
 
@@ -533,7 +542,7 @@ const PageFooter = () => (
     </div>
 
     <div
-      className="mx-auto px-6 md:px-12 py-8 flex items-center justify-start"
+      className="mx-auto px-6 md:px-12 py-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-6"
       style={{ maxWidth: '1440px', borderTop: '1px solid rgba(255,255,255,0.05)' }}
     >
       <div className="flex items-center gap-3">
@@ -548,6 +557,18 @@ const PageFooter = () => (
           © {new Date().getFullYear()} Xyra Finance
         </span>
       </div>
+      <nav
+        className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm"
+        style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+        aria-label="Documentation"
+      >
+        <Link href="/docs" className="text-slate-500 hover:text-cyan-400 transition-colors">
+          Documentation
+        </Link>
+        <Link href="/whitepaper" className="text-slate-500 hover:text-cyan-400 transition-colors">
+          Whitepaper
+        </Link>
+      </nav>
     </div>
   </footer>
 );

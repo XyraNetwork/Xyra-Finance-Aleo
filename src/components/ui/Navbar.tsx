@@ -69,6 +69,7 @@ const Navbar = () => {
     { name: 'ADMIN', id: 'admin', href: '/admin' },
     { name: 'MARKETS', id: 'markets', href: '/markets' },
     { name: 'DOCS', id: 'docs', href: '/docs' },
+    { name: 'WHITEPAPER', id: 'whitepaper', href: '/whitepaper' },
   ] as const;
   const navItems = baseNavItems.filter((item) => item.id !== 'admin' || isAdminWallet);
 

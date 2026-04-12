@@ -20,15 +20,17 @@ export default function Layout({
   const router = useRouter();
   const isDashboard = router.pathname === '/dashboard';
   const isDocs = router.pathname === '/docs';
+  const isWhitepaper = router.pathname === '/whitepaper';
+  const wideOverflow = isDocs || isWhitepaper;
 
   return (
     <DashboardViewProvider>
       <div
-        className={`text-base-content flex min-h-screen flex-col ${isDocs ? 'overflow-x-visible' : 'overflow-x-hidden'} ${isDashboard ? 'bg-[#030712]' : 'bg-[#030712]'}`}
+        className={`text-base-content flex min-h-screen flex-col ${wideOverflow ? 'overflow-x-visible' : 'overflow-x-hidden'} ${isDashboard ? 'bg-[#030712]' : 'bg-[#030712]'}`}
       >
         <Navbar />
         <main
-          className={`flex flex-grow flex-col pt-32 ${isDocs ? 'overflow-x-visible' : 'overflow-x-hidden'} ${isDashboard ? 'bg-[#030712] min-h-[calc(100vh-4rem)]' : 'bg-[#030712]'}`}
+          className={`flex flex-grow flex-col pt-32 ${wideOverflow ? 'overflow-x-visible' : 'overflow-x-hidden'} ${isDashboard ? 'bg-[#030712] min-h-[calc(100vh-4rem)]' : 'bg-[#030712]'}`}
         >
           {children}
         </main>
