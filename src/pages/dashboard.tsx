@@ -585,6 +585,8 @@ const DashboardPage: NextPageWithLayout = () => {
     liqBonusBps?: number;
   }>({ loading: false, ok: false });
   const [liqUiLimits, setLiqUiLimits] = useState<SelfLiquidationUiLimits | null>(null);
+  const [liqHeroRefreshing, setLiqHeroRefreshing] = useState(false);
+  const [flashHeroRefreshing, setFlashHeroRefreshing] = useState(false);
   const [chainPositionNoteSchema, setChainPositionNoteSchema] = useState<number | null>(null);
   const [posNoteLoading, setPosNoteLoading] = useState(false);
   const [posNoteStatus, setPosNoteStatus] = useState('');
@@ -1160,6 +1162,95 @@ const DashboardPage: NextPageWithLayout = () => {
       setFlashSessionsLoading(false);
     }
   }, [address]);
+
+  /** Hero card: reload Supabase history + on-chain liquidation preview / repay limits (no full page reload). */
+  const refreshLiquidationHero = useCallback(async () => {
+    if (!connected || !requestRecords || !publicKey?.trim().startsWith('aleo1')) {
+      if (address?.trim()) await fetchTransactionHistory();
+      return;
+    }
+    setLiqHeroRefreshing(true);
+    try {
+      await fetchTransactionHistory();
+      const repayRaw = Number(liqRepayAmountInput);
+      const repay = Number.isFinite(repayRaw) && repayRaw > 0 ? repayRaw : 0;
+      setLiqPreview((p) => ({ ...p, loading: true }));
+      const scaled = await parseLatestLendingPositionScaled(
+        requestRecords,
+        LENDING_POOL_PROGRAM_ID,
+        decrypt,
+      );
+      const preview = await getLiquidationPreviewAleo(
+        LENDING_POOL_PROGRAM_ID,
+        repay,
+        liqSeizeAsset,
+        scaled,
+      );
+      setLiqPreview({
+        loading: false,
+        ok: preview.ok,
+        reason: preview.reason,
+        liquidatable: preview.liquidatable,
+        totalDebtUsd: preview.totalDebtUsd,
+        thresholdCollateralUsd: preview.thresholdCollateralUsd,
+        aleoDebt: preview.aleoDebt,
+        maxCloseAleo: preview.maxCloseAleo,
+        seizeAmount: preview.seizeAmount,
+        collateralSeizeAsset: preview.collateralSeizeAsset,
+        liqBonusBps: preview.liqBonusBps,
+      });
+      const lim = await getSelfLiquidationUiLimits(LENDING_POOL_PROGRAM_ID, requestRecords, decrypt);
+      setLiqUiLimits(lim);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Refresh failed.';
+      setLiqPreview((p) => ({
+        ...p,
+        loading: false,
+        ok: false,
+        reason: msg,
+        liquidatable: false,
+      }));
+      setLiqUiLimits({
+        ok: false,
+        reason: msg,
+        maxCloseAleo: 0,
+        maxCreditsSingleRecordAleo: 0,
+        effectiveMaxRepayAleo: 0,
+        seizeOptions: [],
+        aleoDebt: 0,
+        realSupAleo: 0,
+        realSupUsdcx: 0,
+        realSupUsad: 0,
+      });
+    } finally {
+      setLiqHeroRefreshing(false);
+    }
+  }, [
+    address,
+    connected,
+    decrypt,
+    fetchTransactionHistory,
+    liqRepayAmountInput,
+    liqSeizeAsset,
+    publicKey,
+    requestRecords,
+  ]);
+
+  /** Hero card: reload pool liquidity for selected asset + flash sessions from backend. */
+  const refreshFlashHero = useCallback(async () => {
+    setFlashHeroRefreshing(true);
+    try {
+      await fetchFlashSessions();
+      try {
+        const v = await fetchAvailableLiquidityMicro(LENDING_POOL_PROGRAM_ID, flashAsset);
+        setFlashAvailLiquidityMicro(v);
+      } catch {
+        setFlashAvailLiquidityMicro(null);
+      }
+    } finally {
+      setFlashHeroRefreshing(false);
+    }
+  }, [fetchFlashSessions, flashAsset]);
 
   const saveTransactionToSupabase = async (
     walletAddress: string,
@@ -4694,17 +4785,28 @@ const DashboardPage: NextPageWithLayout = () => {
         <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-[#0a1324] via-[#0b1220] to-[#121a32] p-5 sm:p-8 mb-6">
           <div className="pointer-events-none absolute -top-24 -right-20 h-72 w-72 rounded-full bg-cyan-500/20 blur-3xl" />
           <div className="pointer-events-none absolute -bottom-24 -left-20 h-72 w-72 rounded-full bg-indigo-500/20 blur-3xl" />
-          <div className="relative">
-            <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300/80 mb-2">Liquidity Strategy</p>
-            <h1 className="text-3xl sm:text-5xl font-semibold text-white leading-tight">Flash Loan</h1>
-            <div className="mt-3 w-full space-y-1.5 text-sm text-slate-300/90">
-              <p>Take a short-term loan, run your action, and pay it back in the same flow.</p>
-              <p className="text-slate-400">- Pick an asset and open a flash loan session.</p>
-              <p className="text-slate-400">- You can borrow only up to the amount currently available in the pool.</p>
-              <p className="text-slate-400">- Your wallet gets funded from the vault with that same asset.</p>
-              <p className="text-slate-400">- Repay the amount plus fee (and your chosen minimum profit target).</p>
-              <p className="text-slate-400">- If you do not settle the current session successfully, it stays active and you cannot open the next flash loan session.</p>
+          <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300/80 mb-2">Liquidity Strategy</p>
+              <h1 className="text-3xl sm:text-5xl font-semibold text-white leading-tight">Flash Loan</h1>
+              <div className="mt-3 w-full space-y-1.5 text-sm text-slate-300/90">
+                <p>Take a short-term loan, run your action, and pay it back in the same flow.</p>
+                <p className="text-slate-400">- Pick an asset and open a flash loan session.</p>
+                <p className="text-slate-400">- You can borrow only up to the amount currently available in the pool.</p>
+                <p className="text-slate-400">- Your wallet gets funded from the vault with that same asset.</p>
+                <p className="text-slate-400">- Repay the amount plus fee (and your chosen minimum profit target).</p>
+                <p className="text-slate-400">- If you do not settle the current session successfully, it stays active and you cannot open the next flash loan session.</p>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => void refreshFlashHero()}
+              disabled={flashHeroRefreshing}
+              title="Refresh pool liquidity and flash sessions"
+              className="shrink-0 self-end sm:self-start px-4 py-1.5 rounded-lg text-xs font-mono text-slate-400 hover:text-white transition-colors disabled:opacity-40 border border-white/10 bg-slate-900/60"
+            >
+              {flashHeroRefreshing ? 'Loading…' : 'REFRESH'}
+            </button>
           </div>
         </div>
         {!connected && (connecting || !allowShowConnectCTA) && (
@@ -5197,15 +5299,31 @@ const DashboardPage: NextPageWithLayout = () => {
         <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-[#0a1324] via-[#0b1220] to-[#121a32] p-5 sm:p-8 mb-6">
           <div className="pointer-events-none absolute -top-24 -right-20 h-72 w-72 rounded-full bg-cyan-500/20 blur-3xl" />
           <div className="pointer-events-none absolute -bottom-24 -left-20 h-72 w-72 rounded-full bg-indigo-500/20 blur-3xl" />
-          <div className="relative">
-            <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300/80 mb-2">Risk Management</p>
-            <h1 className="text-3xl sm:text-5xl font-semibold text-white leading-tight">Self Liquidation</h1>
-            <div className="mt-3 w-full space-y-1.5 text-sm text-slate-300/90">
-              <p>Repay part of your ALEO loan and get one asset back as payout.</p>
-              <p className="text-slate-400">- Self liquidation is available only when your Health Factor drops below 1 (liquidation zone).</p>
-              <p className="text-slate-400">- Per transaction limit: up to 50% of current ALEO debt (and within one spendable credits note).</p>
-              <p className="text-slate-400">- Enter amount, select payout asset, check estimate, then confirm.</p>
+          <div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300/80 mb-2">Risk Management</p>
+              <h1 className="text-3xl sm:text-5xl font-semibold text-white leading-tight">Self Liquidation</h1>
+              <div className="mt-3 w-full space-y-1.5 text-sm text-slate-300/90">
+                <p>Repay part of your ALEO loan and get one asset back as payout.</p>
+                <p className="text-slate-400">- Self liquidation is available only when your Health Factor drops below 1 (liquidation zone).</p>
+                <p className="text-slate-400">- Per transaction limit: up to 50% of current ALEO debt (and within one spendable credits note).</p>
+                <p className="text-slate-400">- Enter amount, select payout asset, check estimate, then confirm.</p>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => void refreshLiquidationHero()}
+              disabled={
+                liqHeroRefreshing ||
+                !connected ||
+                !requestRecords ||
+                !publicKey?.trim().startsWith('aleo1')
+              }
+              title="Refresh liquidation preview, repay limits, and history"
+              className="shrink-0 self-end sm:self-start px-4 py-1.5 rounded-lg text-xs font-mono text-slate-400 hover:text-white transition-colors disabled:opacity-40 border border-white/10 bg-slate-900/60"
+            >
+              {liqHeroRefreshing ? 'Loading…' : 'REFRESH'}
+            </button>
           </div>
         </div>
 
