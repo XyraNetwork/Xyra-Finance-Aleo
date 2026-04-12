@@ -364,6 +364,9 @@ const DashboardPage: NextPageWithLayout = () => {
     }
   }, [router.query.view, setView]);
 
+  /** Main lending UI only: avoids fetchRecords + decrypt for flash/liquidation/markets/docs cold loads. */
+  const viewWantsFullLendingHydration = view === 'dashboard';
+
   const wallet = useWallet() as any;
   const {
     address,
@@ -1259,6 +1262,12 @@ const DashboardPage: NextPageWithLayout = () => {
     setChainWithdrawCaps(null);
   }, [publicKey, requestRecords, decrypt]);
 
+  /** Borrow/withdraw caps hit `/vault-balances`; liquidation & flash UIs do not need them. */
+  const refreshChainPortfolioCapsForActiveView = useCallback(async () => {
+    if (view === 'liquidation' || view === 'flash') return;
+    await refreshChainPortfolioCaps();
+  }, [view, refreshChainPortfolioCaps]);
+
   const refreshPoolState = async (includeUserPosition: boolean = false) => {
     try {
       setIsRefreshingState(true);
@@ -1302,7 +1311,7 @@ const DashboardPage: NextPageWithLayout = () => {
           if (requestRecords) {
             getPrivateCreditsBalance(requestRecords, decrypt).then(setPrivateAleoBalance).catch(() => setPrivateAleoBalance(null));
           }
-          await refreshChainPortfolioCaps();
+          await refreshChainPortfolioCapsForActiveView();
         } catch (error) {
           privacyWarn('Failed to refresh user position from records:', error);
           setUserSupplied('0');
@@ -1330,7 +1339,7 @@ const DashboardPage: NextPageWithLayout = () => {
         setChainBorrowCaps(null);
         setChainWithdrawCaps(null);
       }
-      // Pool-only refresh while wallet connected: do not zero user rows or clear chain caps (see refreshChainPortfolioCaps effect).
+      // Pool-only refresh while wallet connected: do not zero user rows or clear chain caps (see chain caps effect).
     } catch (e) {
       console.error('Failed to fetch pool state', e);
       setStatusMessage('Failed to fetch pool state. Check console for details.');
@@ -1386,7 +1395,7 @@ const DashboardPage: NextPageWithLayout = () => {
             setEffectiveUserBorrowedUsdc(null);
           }
           getPrivateUsdcBalance(requestRecords, decrypt).then(setPrivateUsdcBalance).catch(() => setPrivateUsdcBalance(null));
-          await refreshChainPortfolioCaps();
+          await refreshChainPortfolioCapsForActiveView();
         } catch (error) {
           privacyWarn('Failed to refresh USDC user position:', error);
           setUserSuppliedUsdc('0');
@@ -1469,7 +1478,7 @@ const DashboardPage: NextPageWithLayout = () => {
             effectiveBorrow_usad: effective?.effectiveBorrowDebt ?? null,
             privateBalance_usad: privUsad,
           });
-          await refreshChainPortfolioCaps();
+          await refreshChainPortfolioCapsForActiveView();
         } catch (error) {
           privacyWarn('Failed to refresh USAD user position:', error);
           setUserSuppliedUsad('0');
@@ -1506,8 +1515,8 @@ const DashboardPage: NextPageWithLayout = () => {
       setChainWithdrawCaps(null);
       return;
     }
-    void refreshChainPortfolioCaps();
-  }, [connected, publicKey, refreshChainPortfolioCaps]);
+    void refreshChainPortfolioCapsForActiveView();
+  }, [connected, publicKey, refreshChainPortfolioCapsForActiveView]);
 
   // One-time pool state fetch on page load/refresh and when wallet connects.
   // This DOES NOT touch private records / requestRecords to avoid extra wallet prompts.
@@ -1573,13 +1582,16 @@ const DashboardPage: NextPageWithLayout = () => {
   }, [connected, publicKey, requestRecords, walletPermissionsInitialized, userPositionInitialized]);
 
   // After wallet is connected and permissions are initialized, load the user's
-  // position once automatically (Your Position / Activity Totals).
+  // position once automatically (Your Position / Activity Totals). Skipped on Flash/Liquidation/etc.
   useEffect(() => {
     if (!connected || !publicKey || !requestRecords) {
       return;
     }
     if (!walletPermissionsInitialized) {
       // Wait until we've done the initial record-permission request
+      return;
+    }
+    if (!viewWantsFullLendingHydration) {
       return;
     }
     if (userPositionInitialized) {
@@ -1597,7 +1609,14 @@ const DashboardPage: NextPageWithLayout = () => {
         setUserPositionInitialized(true);
       }
     })();
-  }, [connected, publicKey, requestRecords, walletPermissionsInitialized, userPositionInitialized]);
+  }, [
+    connected,
+    publicKey,
+    requestRecords,
+    walletPermissionsInitialized,
+    userPositionInitialized,
+    viewWantsFullLendingHydration,
+  ]);
 
   // Load Supabase tx history only on views that show it (avoid work on Flash-only visits).
   const viewWantsTxHistory = view === 'dashboard' || view === 'liquidation';
@@ -2549,7 +2568,7 @@ const DashboardPage: NextPageWithLayout = () => {
         setOpenAccountStatusMsg(`Syncing private position… (${i}/${maxRecordAttempts})`);
         await new Promise((resolve) => setTimeout(resolve, recordDelayMs));
         try {
-          await refreshChainPortfolioCaps();
+          await refreshChainPortfolioCapsForActiveView();
           if (requestRecords) {
             const maybeScaled = await parseLatestLendingPositionScaled(
               requestRecords,
@@ -4009,8 +4028,8 @@ const DashboardPage: NextPageWithLayout = () => {
         hasScaledBorrowDebt ||
         totalDebtUsd > 1e-12;
 
-  // Simple loading flags for balances
-  const walletBalancesLoading = connected && !userPositionInitialized;
+  // Simple loading flags for balances (main dashboard only — other tabs don't wait on decrypt hydration)
+  const walletBalancesLoading = connected && !userPositionInitialized && viewWantsFullLendingHydration;
   const dashboardDataReady =
     connected &&
     !walletBalancesLoading &&
@@ -5167,13 +5186,8 @@ const DashboardPage: NextPageWithLayout = () => {
     const enteredRepay = Number(liqRepayAmountInput);
     const enteredRepayDisplay = Number.isFinite(enteredRepay) && enteredRepay > 0 ? enteredRepay : 0;
     const effectiveMaxRepay = liqUiLimits?.ok ? liqUiLimits.effectiveMaxRepayAleo : 0;
-    // Match dashboard HF: ∞ means no meaningful debt — same as HF ≥ 1, hide execute until HF < 1.
-    const canSelfLiquidateNow = !!(
-      liqPreview.ok &&
-      liqPreview.liquidatable &&
-      healthFactor != null &&
-      healthFactor < 1
-    );
+    // On-chain preview (debt vs liq threshold) is authoritative; do not require dashboard HF / chain caps.
+    const canSelfLiquidateNow = !!(liqPreview.ok && liqPreview.liquidatable);
     const liquidationHistory = txHistory.filter((row) => {
       const t = String(row.type || '').toLowerCase();
       return t === 'liquidation' || t === 'self_liquidate_payout';
@@ -5375,27 +5389,33 @@ const DashboardPage: NextPageWithLayout = () => {
               </div>
             ) : (
               <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/[0.06] p-4">
-                {healthFactor == null ? (
+                {liqPreview.loading ? (
                   <>
-                    <p className="text-sm font-medium text-emerald-200">No self-liquidation needed</p>
+                    <p className="text-sm font-medium text-slate-200">Loading liquidation preview…</p>
+                    <p className="text-xs text-slate-400/90 mt-1">Reading your position from the wallet.</p>
+                  </>
+                ) : liqPreview.ok && !liqPreview.liquidatable ? (
+                  <>
+                    <p className="text-sm font-medium text-emerald-200">Your position is not in the liquidation zone</p>
                     <p className="text-xs text-emerald-100/80 mt-1">
-                      Health Factor shows ∞ when there is no meaningful borrow. The repayment form and Execute button
-                      only appear when Health Factor is below 1 (liquidation zone).
+                      On-chain debt is at or below the liquidation threshold. Self liquidation is not available until
+                      debt exceeds that threshold.
                     </p>
                   </>
-                ) : healthFactor >= 1 ? (
-                  <>
-                    <p className="text-sm font-medium text-emerald-200">Your position is healthy</p>
-                    <p className="text-xs text-emerald-100/80 mt-1">
-                      Self liquidation unlocks only if Health Factor drops below 1.0. Right now no action is needed.
-                    </p>
-                  </>
-                ) : (
+                ) : !liqPreview.ok ? (
                   <>
                     <p className="text-sm font-medium text-amber-200/95">Liquidation preview unavailable</p>
                     <p className="text-xs text-amber-100/75 mt-1">
                       {liqPreview.reason ||
-                        'Health Factor is below 1 but we could not confirm a liquidatable preview. Try refreshing or check pool data.'}
+                        'Connect your wallet and ensure a LendingPosition record is available, then try again.'}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm font-medium text-amber-200/95">Unable to show repayment form</p>
+                    <p className="text-xs text-amber-100/75 mt-1">
+                      Your position looks liquidatable in preview but the form is gated — check repay limits and try
+                      refreshing.
                     </p>
                   </>
                 )}
