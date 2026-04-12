@@ -1138,16 +1138,10 @@ const DashboardPage: NextPageWithLayout = () => {
 
   const fetchFlashSessions = useCallback(async () => {
     if (!address?.trim()) return;
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
-    if (!backendUrl) {
-      setFlashSessionsError('NEXT_PUBLIC_BACKEND_URL is not configured.');
-      setFlashSessions([]);
-      return;
-    }
     setFlashSessionsLoading(true);
     setFlashSessionsError(null);
     try {
-      const resp = await fetch(`${backendUrl}/flash/sessions?wallet=${encodeURIComponent(address.trim())}&limit=100`);
+      const resp = await fetch(`/api/flash-sessions?wallet=${encodeURIComponent(address.trim())}&limit=100`);
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || data?.ok === false) {
         setFlashSessionsError(data?.error || 'Failed to load flash sessions.');
@@ -2402,12 +2396,11 @@ const DashboardPage: NextPageWithLayout = () => {
       setFlashStatusMessage("Strategy id must be Leo field like '1field'.");
       return;
     }
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
     let sessionsSnapshot = flashSessions;
-    if (backendUrl && publicKey?.trim()) {
+    if (publicKey?.trim()) {
       try {
         const resp = await fetch(
-          `${backendUrl.replace(/\/$/, '')}/flash/sessions?wallet=${encodeURIComponent(publicKey.trim())}&limit=100`,
+          `/api/flash-sessions?wallet=${encodeURIComponent(publicKey.trim())}&limit=100`,
         );
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && Array.isArray(data?.sessions)) sessionsSnapshot = data.sessions;
@@ -2481,10 +2474,10 @@ const DashboardPage: NextPageWithLayout = () => {
       const finalTxId = await waitForPoolTxFinalization(tx, 'flash_settle');
       setFlashTxId(finalTxId);
       let sessionsForResolve = sessionsSnapshot;
-      if (backendUrl && publicKey?.trim()) {
+      if (publicKey?.trim()) {
         try {
           const resp = await fetch(
-            `${backendUrl.replace(/\/$/, '')}/flash/sessions?wallet=${encodeURIComponent(publicKey.trim())}&limit=100`,
+            `/api/flash-sessions?wallet=${encodeURIComponent(publicKey.trim())}&limit=100`,
           );
           const data = await resp.json().catch(() => ({}));
           if (resp.ok && Array.isArray(data?.sessions)) sessionsForResolve = data.sessions;
@@ -2512,9 +2505,9 @@ const DashboardPage: NextPageWithLayout = () => {
         }
       };
       const backendFlashWarnings: string[] = [];
-      if (backendUrl && sessionIdForSettle) {
+      if (sessionIdForSettle) {
         try {
-          const r1 = await fetch(`${backendUrl}/flash/mark-settle-pending`, {
+          const r1 = await fetch('/api/flash-mark-settle-pending', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session_id: sessionIdForSettle, flash_settle_tx_id: finalTxId }),
@@ -2524,7 +2517,7 @@ const DashboardPage: NextPageWithLayout = () => {
           backendFlashWarnings.push(`mark-settle-pending: ${getErrorMessage(e)}`);
         }
         try {
-          const r2 = await fetch(`${backendUrl}/flash/complete-session`, {
+          const r2 = await fetch('/api/flash-complete-session', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -2537,9 +2530,7 @@ const DashboardPage: NextPageWithLayout = () => {
         } catch (e) {
           backendFlashWarnings.push(`complete-session: ${getErrorMessage(e)}`);
         }
-      } else if (!backendUrl) {
-        backendFlashWarnings.push('NEXT_PUBLIC_BACKEND_URL not set — flash_sessions not updated.');
-      } else if (!sessionIdForSettle) {
+      } else {
         backendFlashWarnings.push(
           'No funded flash session in memory — refresh Flash Loan History after vault funding, then settle again to sync status.',
         );
@@ -2920,97 +2911,6 @@ const DashboardPage: NextPageWithLayout = () => {
     }
     return { disabled: false as const, reason: null as string | null };
   }, [connected, liqLoading, liqPreview, publicKey, liqRepayAmountInput, view, liqUiLimits]);
-
-  const handleLiquidation = async () => {
-    if (!connected || !publicKey || !executeTransaction || !requestRecords) {
-      setLiqStatusMessage('Please connect your wallet.');
-      return;
-    }
-    if (liquidationSubmitGate.disabled) {
-      setLiqStatusMessage(liquidationSubmitGate.reason ?? 'Cannot submit liquidation.');
-      return;
-    }
-    const repay = Number(liqRepayAmountInput);
-    if (!Number.isFinite(repay) || repay <= 0) {
-      setLiqStatusMessage('Enter a valid repay amount.');
-      return;
-    }
-    try {
-      setLiqLoading(true);
-      setLiqStatusMessage('Submitting self-liquidation…');
-      setLiqTxId(null);
-      const tx = await lendingSelfLiquidateDebtCredits(
-        executeTransaction,
-        repay,
-        liqSeizeAsset,
-        publicKey,
-        requestRecords,
-        decrypt,
-      );
-      if (tx === '__CANCELLED__') {
-        setLiqStatusMessage('Transaction cancelled by user.');
-        return;
-      }
-      let finalTxId = tx;
-      let finalized = false;
-      const maxAttempts = 45;
-      const delayMs = 2000;
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-        if (!transactionStatus) continue;
-        try {
-          const statusResult = await transactionStatus(tx);
-          const statusText =
-            typeof statusResult === 'string'
-              ? statusResult
-              : (statusResult as { status?: string })?.status ?? '';
-          const statusLower = (statusText || '').toLowerCase();
-          if (statusLower === 'finalized' || statusLower === 'accepted') {
-            finalized = true;
-            const resolvedId =
-              (typeof statusResult === 'object' && (statusResult as { transactionId?: string }).transactionId) || tx;
-            finalTxId = resolvedId;
-            setLiqTxId(isExplorerHash(resolvedId) ? resolvedId : null);
-            break;
-          }
-          if (statusLower === 'rejected' || statusLower === 'failed' || statusLower === 'dropped') {
-            setLiqStatusMessage(`Transaction ${statusLower}.`);
-            return;
-          }
-          setLiqStatusMessage(`Transaction ${statusText || 'pending'}… (${attempt}/${maxAttempts})`);
-        } catch {
-          // continue polling
-        }
-      }
-      if (!finalized) {
-        setLiqStatusMessage('Transaction not finalized in time. Check explorer.');
-        return;
-      }
-      const seizeAssetKey =
-        liqSeizeAsset === '0field' ? 'aleo' : liqSeizeAsset === '1field' ? 'usdc' : 'usad';
-      const seizeOutHuman = liqPreview?.seizeAmount ?? 0;
-      const repayHuman = Number.isFinite(repay) && repay > 0 ? repay : null;
-      if (seizeOutHuman > 0) {
-        await saveTransactionToSupabase(
-          publicKey,
-          finalTxId,
-          'self_liquidate_payout',
-          seizeAssetKey,
-          seizeOutHuman,
-          LENDING_POOL_PROGRAM_ID,
-          null,
-          repayHuman,
-        ).catch(() => { });
-      }
-      fetchTransactionHistory();
-      setLiqStatusMessage('Liquidation finalized. Pool state refreshed.');
-      await Promise.all([refreshPoolState(true), refreshUsdcPoolState(true), refreshUsadPoolState(true)]);
-    } catch (e: unknown) {
-      setLiqStatusMessage(getErrorMessage(e));
-    } finally {
-      setLiqLoading(false);
-    }
-  };
 
   const handleActionUsdc = async (
     action: 'deposit' | 'borrow' | 'repay' | 'withdraw',
@@ -4088,6 +3988,103 @@ const DashboardPage: NextPageWithLayout = () => {
   const healthFactorFromUsd = (weightedUsd: number, debtUsd: number): number | null =>
     debtUsd > 1e-9 && Number(debtUsd.toFixed(2)) > 0 ? weightedUsd / debtUsd : null;
   const healthFactor = healthFactorFromUsd(weightedCollateralUsdForHf, totalDebtUsdForHf);
+
+  const handleLiquidation = async () => {
+    if (!connected || !publicKey || !executeTransaction || !requestRecords) {
+      setLiqStatusMessage('Please connect your wallet.');
+      return;
+    }
+    if (liquidationSubmitGate.disabled) {
+      setLiqStatusMessage(liquidationSubmitGate.reason ?? 'Cannot submit liquidation.');
+      return;
+    }
+    if (healthFactor != null && healthFactor >= 1) {
+      setLiqStatusMessage(
+        'Health factor is ≥ 1.0 on the dashboard. Self liquidation is only available when HF is below 1.0.',
+      );
+      return;
+    }
+    const repay = Number(liqRepayAmountInput);
+    if (!Number.isFinite(repay) || repay <= 0) {
+      setLiqStatusMessage('Enter a valid repay amount.');
+      return;
+    }
+    try {
+      setLiqLoading(true);
+      setLiqStatusMessage('Submitting self-liquidation…');
+      setLiqTxId(null);
+      const tx = await lendingSelfLiquidateDebtCredits(
+        executeTransaction,
+        repay,
+        liqSeizeAsset,
+        publicKey,
+        requestRecords,
+        decrypt,
+      );
+      if (tx === '__CANCELLED__') {
+        setLiqStatusMessage('Transaction cancelled by user.');
+        return;
+      }
+      let finalTxId = tx;
+      let finalized = false;
+      const maxAttempts = 45;
+      const delayMs = 2000;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (!transactionStatus) continue;
+        try {
+          const statusResult = await transactionStatus(tx);
+          const statusText =
+            typeof statusResult === 'string'
+              ? statusResult
+              : (statusResult as { status?: string })?.status ?? '';
+          const statusLower = (statusText || '').toLowerCase();
+          if (statusLower === 'finalized' || statusLower === 'accepted') {
+            finalized = true;
+            const resolvedId =
+              (typeof statusResult === 'object' && (statusResult as { transactionId?: string }).transactionId) || tx;
+            finalTxId = resolvedId;
+            setLiqTxId(isExplorerHash(resolvedId) ? resolvedId : null);
+            break;
+          }
+          if (statusLower === 'rejected' || statusLower === 'failed' || statusLower === 'dropped') {
+            setLiqStatusMessage(`Transaction ${statusLower}.`);
+            return;
+          }
+          setLiqStatusMessage(`Transaction ${statusText || 'pending'}… (${attempt}/${maxAttempts})`);
+        } catch {
+          // continue polling
+        }
+      }
+      if (!finalized) {
+        setLiqStatusMessage('Transaction not finalized in time. Check explorer.');
+        return;
+      }
+      const seizeAssetKey =
+        liqSeizeAsset === '0field' ? 'aleo' : liqSeizeAsset === '1field' ? 'usdc' : 'usad';
+      const seizeOutHuman = liqPreview?.seizeAmount ?? 0;
+      const repayHuman = Number.isFinite(repay) && repay > 0 ? repay : null;
+      if (seizeOutHuman > 0) {
+        await saveTransactionToSupabase(
+          publicKey,
+          finalTxId,
+          'self_liquidate_payout',
+          seizeAssetKey,
+          seizeOutHuman,
+          LENDING_POOL_PROGRAM_ID,
+          null,
+          repayHuman,
+        ).catch(() => { });
+      }
+      fetchTransactionHistory();
+      setLiqStatusMessage('Liquidation finalized. Pool state refreshed.');
+      await Promise.all([refreshPoolState(true), refreshUsdcPoolState(true), refreshUsadPoolState(true)]);
+    } catch (e: unknown) {
+      setLiqStatusMessage(getErrorMessage(e));
+    } finally {
+      setLiqLoading(false);
+    }
+  };
 
   // Suggested "repay max" per selected repay asset.
   // Repay is cross-asset; when chain-derived totals are unavailable, fall back to the UI's
@@ -5288,8 +5285,10 @@ const DashboardPage: NextPageWithLayout = () => {
     const enteredRepay = Number(liqRepayAmountInput);
     const enteredRepayDisplay = Number.isFinite(enteredRepay) && enteredRepay > 0 ? enteredRepay : 0;
     const effectiveMaxRepay = liqUiLimits?.ok ? liqUiLimits.effectiveMaxRepayAleo : 0;
-    // On-chain preview (debt vs liq threshold) is authoritative; do not require dashboard HF / chain caps.
-    const canSelfLiquidateNow = !!(liqPreview.ok && liqPreview.liquidatable);
+    // Preview uses per-asset liquidation threshold; dashboard HF uses LTV-weighted collateral — align UX with HF < 1.
+    const hfAllowsSelfLiquidation =
+      healthFactor == null ? false : healthFactor < 1;
+    const canSelfLiquidateNow = !!(liqPreview.ok && liqPreview.liquidatable && hfAllowsSelfLiquidation);
     const liquidationHistory = txHistory.filter((row) => {
       const t = String(row.type || '').toLowerCase();
       return t === 'liquidation' || t === 'self_liquidate_payout';
@@ -5520,6 +5519,23 @@ const DashboardPage: NextPageWithLayout = () => {
                       debt exceeds that threshold.
                     </p>
                   </>
+                ) : liqPreview.ok && liqPreview.liquidatable && healthFactor != null && healthFactor >= 1 ? (
+                  <>
+                    <p className="text-sm font-medium text-emerald-200">Health factor is above the liquidation zone</p>
+                    <p className="text-xs text-emerald-100/80 mt-1">
+                      Your dashboard health factor is {healthFactor.toFixed(2)} (≥ 1.0). Self liquidation is only shown
+                      when HF is below 1.0. The program can still flag debt above the{' '}
+                      <span className="text-emerald-200/90">asset liquidation threshold</span>, which uses a different
+                      weighting than HF — both can disagree briefly.
+                    </p>
+                  </>
+                ) : liqPreview.ok && liqPreview.liquidatable && healthFactor == null ? (
+                  <>
+                    <p className="text-sm font-medium text-slate-200">Waiting for health factor</p>
+                    <p className="text-xs text-slate-400/90 mt-1">
+                      Debt or collateral is still loading for HF. Open the main dashboard or refresh, then return here.
+                    </p>
+                  </>
                 ) : !liqPreview.ok ? (
                   <>
                     <p className="text-sm font-medium text-amber-200/95">Liquidation preview unavailable</p>
@@ -5552,8 +5568,22 @@ const DashboardPage: NextPageWithLayout = () => {
           <div className="rounded-3xl border border-white/10 bg-slate-900/60 p-5 sm:p-6 backdrop-blur-xl">
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 mb-4">
               <p className="text-[11px] uppercase tracking-wide text-slate-400">Position status</p>
-              <p className={`mt-1 text-sm font-medium ${liqPreview.liquidatable ? 'text-rose-300' : 'text-emerald-300'}`}>
-                {liqPreview.ok ? (liqPreview.liquidatable ? 'Liquidatable' : 'Healthy') : 'Unavailable'}
+              <p
+                className={`mt-1 text-sm font-medium ${
+                  liqPreview.ok && liqPreview.liquidatable && healthFactor != null && healthFactor >= 1
+                    ? 'text-amber-200'
+                    : liqPreview.liquidatable
+                      ? 'text-rose-300'
+                      : 'text-emerald-300'
+                }`}
+              >
+                {liqPreview.ok
+                  ? liqPreview.liquidatable
+                    ? healthFactor != null && healthFactor >= 1
+                      ? 'Threshold crossed (HF ≥ 1)'
+                      : 'Liquidatable'
+                    : 'Healthy'
+                  : 'Unavailable'}
               </p>
             </div>
             <div className="space-y-3">

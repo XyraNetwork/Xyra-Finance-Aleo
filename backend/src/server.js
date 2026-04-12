@@ -519,6 +519,19 @@ function normalizeSecret(s) {
 }
 const RECORD_TRANSACTION_SECRET = normalizeSecret(process.env.RECORD_TRANSACTION_SECRET);
 
+/** Same secret as POST /record-transaction — used by Next.js proxies for flash session mutations. */
+function assertRecordTxSecretForJson(req, res) {
+  if (!RECORD_TRANSACTION_SECRET) return true;
+  const raw = req.headers['x-record-transaction-secret'] || req.headers.authorization?.replace(/^Bearer\s+/i, '') || '';
+  const provided = (typeof raw === 'string' ? raw : String(raw)).trim();
+  if (provided !== RECORD_TRANSACTION_SECRET) {
+    console.warn('[backend] 401: x-record-transaction-secret mismatch (flash / record-tx)');
+    res.status(401).json({ ok: false, error: 'Unauthorized' });
+    return false;
+  }
+  return true;
+}
+
 app.post('/record-transaction', async (req, res) => {
   if (RECORD_TRANSACTION_SECRET) {
     const raw = req.headers['x-record-transaction-secret'] || req.headers.authorization?.replace(/^Bearer\s+/i, '') || '';
@@ -712,13 +725,7 @@ app.post('/flash/open-session', async (req, res) => {
 });
 
 app.post('/flash/record-open', async (req, res) => {
-  if (RECORD_TRANSACTION_SECRET) {
-    const raw = req.headers['x-record-transaction-secret'] || req.headers.authorization?.replace(/^Bearer\s+/i, '') || '';
-    const provided = (typeof raw === 'string' ? raw : String(raw)).trim();
-    if (provided !== RECORD_TRANSACTION_SECRET) {
-      return res.status(401).json({ ok: false, error: 'Unauthorized' });
-    }
-  }
+  if (!assertRecordTxSecretForJson(req, res)) return;
   try {
     const { user_address, strategy_wallet, asset_id, principal_micro, min_profit_micro, strategy_id, flash_open_tx_id, idempotency_key } = req.body || {};
     const userAddress = String(user_address || '').trim();
@@ -763,6 +770,7 @@ app.post('/flash/record-open', async (req, res) => {
 });
 
 app.get('/flash/sessions', async (req, res) => {
+  if (!assertRecordTxSecretForJson(req, res)) return;
   try {
     const wallet = String(req.query.wallet || '').trim();
     const limitRaw = Number(req.query.limit || 50);
@@ -812,6 +820,7 @@ app.post('/flash/fund-session', async (req, res) => {
 });
 
 app.post('/flash/mark-settle-pending', async (req, res) => {
+  if (!assertRecordTxSecretForJson(req, res)) return;
   try {
     const sessionId = String(req.body?.session_id || '').trim();
     const settleTxId = String(req.body?.flash_settle_tx_id || '').trim();
@@ -834,6 +843,7 @@ app.post('/flash/mark-settle-pending', async (req, res) => {
 });
 
 app.post('/flash/complete-session', async (req, res) => {
+  if (!assertRecordTxSecretForJson(req, res)) return;
   try {
     const sessionId = String(req.body?.session_id || '').trim();
     const settleTxId = String(req.body?.flash_settle_tx_id || '').trim();

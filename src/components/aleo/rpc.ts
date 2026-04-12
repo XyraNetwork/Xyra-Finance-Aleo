@@ -5580,7 +5580,7 @@ export async function getLiquidationPreviewAleo(
     const bU = Number(scaled.scaledBorUsdcx);
     const bD = Number(scaled.scaledBorUsad);
 
-    const [iSA, iSU, iSD, iBA, iBU, iBD, pA, pU, pD, tA, tU, tD, bonus] = await Promise.all([
+    const [iSA, iSU, iSD, iBA, iBU, iBD, pA, pU, pD, tA, tU, tD] = await Promise.all([
       readU64('supply_index', '0field'),
       readU64('supply_index', '1field'),
       readU64('supply_index', '2field'),
@@ -5593,8 +5593,21 @@ export async function getLiquidationPreviewAleo(
       readU64('asset_liq_threshold', '0field'),
       readU64('asset_liq_threshold', '1field'),
       readU64('asset_liq_threshold', '2field'),
-      readU64('asset_liq_bonus', seizeAsset),
     ]);
+
+    // Match Leo `Mapping::get_or_use(asset_liq_bonus, seize_asset, 500u64)` — do not treat missing as 0 bps.
+    const bonusBn = await readMappingU64(programId, 'asset_liq_bonus', seizeAsset);
+    const bonus =
+      bonusBn != null ? Number(bonusBn) : Number(LENDING_LIQ_BONUS_DEFAULT_BPS);
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[getLiquidationPreviewAleo] asset_liq_bonus', {
+        programId,
+        seizeAsset,
+        fromChain: bonusBn === null ? null : bonusBn.toString(),
+        effectiveLiqBonusBps: bonus,
+        defaultUsed: bonusBn === null,
+      });
+    }
 
     const INDEX_SCALE = 1_000_000_000_000;
     const PRICE_SCALE = 1_000_000;
