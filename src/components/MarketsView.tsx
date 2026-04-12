@@ -10,6 +10,7 @@ import {
   getAssetPriceForProgram,
   getLatestBlockHeight,
   fetchAvailableLiquidityMicro,
+  fetchVaultHumanBalancesFromBackend,
   LENDING_POOL_PROGRAM_ID,
   USDC_LENDING_POOL_PROGRAM_ID,
   USAD_LENDING_POOL_PROGRAM_ID,
@@ -280,26 +281,21 @@ export function MarketsView() {
 
     (async () => {
       try {
-        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
-        if (!backendUrl) throw new Error('NEXT_PUBLIC_BACKEND_URL missing');
+        if (!process.env.NEXT_PUBLIC_BACKEND_URL?.trim()) {
+          throw new Error('NEXT_PUBLIC_BACKEND_URL missing');
+        }
 
-        const [resp, pA, pU, pD] = await Promise.all([
-          fetch(`${backendUrl}/vault-balances`),
+        const [vaultHum, pA, pU, pD] = await Promise.all([
+          fetchVaultHumanBalancesFromBackend(),
           getAssetPriceForProgram(LENDING_POOL_PROGRAM_ID, '0field'),
           getAssetPriceForProgram(USDC_LENDING_POOL_PROGRAM_ID, '1field'),
           getAssetPriceForProgram(USAD_LENDING_POOL_PROGRAM_ID, '2field'),
         ]);
-        if (!resp.ok) throw new Error(`vault-balances HTTP ${resp.status}`);
-        const data = await resp.json();
-
-        const aleo = Number(data?.human?.aleo ?? '0');
-        const usdcx = Number(data?.human?.usdcx ?? '0');
-        const usad = Number(data?.human?.usad ?? '0');
 
         if (cancelled) return;
-        setVaultAleoBalance(Number.isFinite(aleo) ? aleo : 0);
-        setVaultUsdcxBalance(Number.isFinite(usdcx) ? usdcx : 0);
-        setVaultUsadBalance(Number.isFinite(usad) ? usad : 0);
+        setVaultAleoBalance(vaultHum && Number.isFinite(vaultHum.aleo) ? vaultHum.aleo : 0);
+        setVaultUsdcxBalance(vaultHum && Number.isFinite(vaultHum.usdcx) ? vaultHum.usdcx : 0);
+        setVaultUsadBalance(vaultHum && Number.isFinite(vaultHum.usad) ? vaultHum.usad : 0);
 
         // Prices are in PRICE_SCALE units (1e6 => $1.000000)
         const toUsd = (raw: number | null) => (raw == null ? null : raw / 1_000_000);

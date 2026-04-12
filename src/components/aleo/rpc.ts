@@ -475,23 +475,15 @@ export async function fetchAvailableLiquidityMicro(
   return readMappingU64(programId, 'available_liquidity', assetKey);
 }
 
-const VAULT_HUMAN_CACHE_TTL_MS = 4000;
+/** Fresh enough for UI caps; backend also caches `/vault-balances` (see VAULT_BALANCES_CACHE_TTL_MS). */
+const VAULT_HUMAN_CACHE_TTL_MS = 20_000;
 let vaultHumanCache: { t: number; value: { aleo: number; usdcx: number; usad: number } | null } | null =
   null;
 
-/**
- * Human balances from `GET {NEXT_PUBLIC_BACKEND_URL}/vault-balances` (same source as dashboard vault checks).
- * Short TTL cache so parallel borrow + withdraw cap calls share one request.
- */
-export async function fetchVaultHumanBalancesFromBackend(): Promise<{
-  aleo: number;
-  usdcx: number;
-  usad: number;
-} | null> {
-  const now = Date.now();
-  if (vaultHumanCache && now - vaultHumanCache.t < VAULT_HUMAN_CACHE_TTL_MS) {
-    return vaultHumanCache.value;
-  }
+/** Coalesce concurrent callers into one HTTP request (e.g. 3× withdraw-out × N position candidates). */
+let vaultHumanInFlight: Promise<{ aleo: number; usdcx: number; usad: number } | null> | null = null;
+
+async function executeVaultHumanFetch(): Promise<{ aleo: number; usdcx: number; usad: number } | null> {
   let out: { aleo: number; usdcx: number; usad: number } | null = null;
   try {
     const base =
@@ -515,8 +507,30 @@ export async function fetchVaultHumanBalancesFromBackend(): Promise<{
   } catch {
     out = null;
   }
-  vaultHumanCache = { t: now, value: out };
+  vaultHumanCache = { t: Date.now(), value: out };
   return out;
+}
+
+/**
+ * Human balances from `GET {NEXT_PUBLIC_BACKEND_URL}/vault-balances` (same source as dashboard vault checks).
+ * TTL cache + in-flight deduplication so parallel cap math does not N-fold the same request.
+ */
+export async function fetchVaultHumanBalancesFromBackend(): Promise<{
+  aleo: number;
+  usdcx: number;
+  usad: number;
+} | null> {
+  const now = Date.now();
+  if (vaultHumanCache && now - vaultHumanCache.t < VAULT_HUMAN_CACHE_TTL_MS) {
+    return vaultHumanCache.value;
+  }
+  if (vaultHumanInFlight) {
+    return vaultHumanInFlight;
+  }
+  vaultHumanInFlight = executeVaultHumanFetch().finally(() => {
+    vaultHumanInFlight = null;
+  });
+  return vaultHumanInFlight;
 }
 
 function humanToMicroU64(h: number): bigint {

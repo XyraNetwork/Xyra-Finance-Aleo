@@ -63,6 +63,7 @@ import {
   getAssetPriceForProgram,
   getAggregatedCrossCollateralBorrowCapsFromWallet,
   getAggregatedCrossCollateralWithdrawCapsFromWallet,
+  fetchVaultHumanBalancesFromBackend,
   floorTokenMicroToDisplayDecimals,
   parseLatestLendingPositionScaled,
   lendingOpenLendingAccount,
@@ -969,26 +970,6 @@ const DashboardPage: NextPageWithLayout = () => {
     return msg || 'Unknown error';
   };
 
-  const fetchVaultBalancesHuman = async (): Promise<{ aleo: number; usdcx: number; usad: number } | null> => {
-    try {
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
-      if (!backendUrl) return null;
-      const resp = await fetch(`${backendUrl}/vault-balances`);
-      if (!resp.ok) return null;
-      const data = await resp.json();
-      const aleo = Number(data?.human?.aleo ?? 0);
-      const usdcx = Number(data?.human?.usdcx ?? 0);
-      const usad = Number(data?.human?.usad ?? 0);
-      return {
-        aleo: Number.isFinite(aleo) ? aleo : 0,
-        usdcx: Number.isFinite(usdcx) ? usdcx : 0,
-        usad: Number.isFinite(usad) ? usad : 0,
-      };
-    } catch {
-      return null;
-    }
-  };
-
   const openActionModal = (
     mode: 'withdraw' | 'deposit' | 'borrow' | 'repay',
     asset: 'aleo' | 'usdc' | 'usad',
@@ -1777,7 +1758,7 @@ const DashboardPage: NextPageWithLayout = () => {
       // Keep existing portfolio/on-chain checks; this is an additional safety gate.
       let vaultBalancesHuman: { aleo: number; usdcx: number; usad: number } | null = null;
       if (action === 'borrow' || action === 'withdraw') {
-        vaultBalancesHuman = await fetchVaultBalancesHuman();
+        vaultBalancesHuman = await fetchVaultHumanBalancesFromBackend();
         const vault = vaultBalancesHuman;
         if (vault && amountToUse > (vault.aleo ?? 0)) {
           const max = Math.max(0, vault.aleo ?? 0);
@@ -2963,7 +2944,7 @@ const DashboardPage: NextPageWithLayout = () => {
 
       // Vault liquidity check (USDCx withdrawals/borrows are paid by backend vault).
       if (action === 'borrow' || action === 'withdraw') {
-        const vault = await fetchVaultBalancesHuman();
+        const vault = await fetchVaultHumanBalancesFromBackend();
         if (vault && amountToUse > (vault.usdcx ?? 0)) {
           const max = Math.max(0, vault.usdcx ?? 0);
           const msg = `Insufficient vault liquidity. You can ${action} at most ${max.toFixed(2)} USDCx right now (treasury wallet). Cross-asset USDCx payouts require USDCx in the vault even when your collateral is only ALEO.`;
@@ -3280,7 +3261,7 @@ const DashboardPage: NextPageWithLayout = () => {
 
       // Vault liquidity check (USAD withdrawals/borrows are paid by backend vault).
       if (action === 'borrow' || action === 'withdraw') {
-        const vault = await fetchVaultBalancesHuman();
+        const vault = await fetchVaultHumanBalancesFromBackend();
         if (vault && amountToUse > (vault.usad ?? 0)) {
           const max = Math.max(0, vault.usad ?? 0);
           const msg = `Insufficient vault liquidity. You can ${action} at most ${max.toFixed(2)} USAD right now (vault wallet balance).`;
