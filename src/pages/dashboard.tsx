@@ -571,6 +571,7 @@ const DashboardPage: NextPageWithLayout = () => {
   const [liqLoading, setLiqLoading] = useState(false);
   const [liqStatusMessage, setLiqStatusMessage] = useState('');
   const [liqTxId, setLiqTxId] = useState<string | null>(null);
+  const [liqTxModalOpen, setLiqTxModalOpen] = useState(false);
   const [liqPreview, setLiqPreview] = useState<{
     loading: boolean;
     ok: boolean;
@@ -4010,6 +4011,7 @@ const DashboardPage: NextPageWithLayout = () => {
       return;
     }
     try {
+      setLiqTxModalOpen(true);
       setLiqLoading(true);
       setLiqStatusMessage('Submitting self-liquidation…');
       setLiqTxId(null);
@@ -5492,17 +5494,6 @@ const DashboardPage: NextPageWithLayout = () => {
                 >
                   {liqLoading ? 'Submitting...' : 'Execute Self Liquidation'}
                 </button>
-                {liqStatusMessage && <div className="text-sm text-slate-300">{liqStatusMessage}</div>}
-                {liqTxId && (
-                  <a
-                    href={getProvableExplorerTxUrl(liqTxId)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-cyan-400 text-xs underline"
-                  >
-                    View Liquidation Tx
-                  </a>
-                )}
               </div>
             ) : (
               <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/[0.06] p-4">
@@ -5603,6 +5594,75 @@ const DashboardPage: NextPageWithLayout = () => {
               </div>
             </div>
           </div>
+          </div>
+        )}
+
+        {liqTxModalOpen && (
+          <div className="fixed inset-0 z-[130] flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0"
+              style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
+              onClick={() => {
+                if (!liqLoading) setLiqTxModalOpen(false);
+              }}
+            />
+            <div
+              className="relative rounded-[24px] p-8 w-full max-w-md"
+              style={{
+                background: 'linear-gradient(145deg, rgba(15,23,42,0.4) 0%, rgba(3,7,18,0.6) 100%)',
+                backdropFilter: 'blur(16px)',
+                WebkitBackdropFilter: 'blur(16px)',
+                border: '1px solid rgba(255,255,255,0.05)',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {!liqLoading && (
+                <button
+                  type="button"
+                  onClick={() => setLiqTxModalOpen(false)}
+                  className="absolute top-5 right-5 w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 transition-colors text-slate-400 text-lg"
+                  aria-label="Close liquidation transaction status"
+                >
+                  ×
+                </button>
+              )}
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold text-white">Self Liquidation</h2>
+              </div>
+              <div className="space-y-4">
+                {liqLoading ? (
+                  <div className="flex flex-col items-center justify-center py-8 gap-3">
+                    <span className="loading loading-spinner loading-lg text-cyan-400" />
+                    <p className="text-sm text-slate-400">{liqStatusMessage || 'Processing…'}</p>
+                  </div>
+                ) : (
+                  <>
+                    {liqStatusMessage && (
+                      <div className="rounded-lg px-4 py-3 text-sm text-center text-slate-300 bg-white/5 border border-white/10">
+                        {liqStatusMessage}
+                      </div>
+                    )}
+                    {liqTxId && (
+                      <a
+                        href={getProvableExplorerTxUrl(liqTxId)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-cyan-400 text-sm font-medium block text-center py-2 hover:text-cyan-300"
+                      >
+                        View Liquidation Tx
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setLiqTxModalOpen(false)}
+                      className="w-full py-3 rounded-xl font-bold text-white border border-white/10 hover:bg-white/10 transition-all"
+                    >
+                      Close
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
